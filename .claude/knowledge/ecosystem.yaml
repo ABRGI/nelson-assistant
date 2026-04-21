@@ -1,0 +1,63 @@
+schema: 1
+node: ecosystem
+purpose: Other repos in the Nelson ecosystem the agent should be AWARE of but does not actively introspect. Deep-dive repos (with their own knowledge graphs) listed separately for cross-reference.
+
+deep_dive_repos:
+  # Each has its own .claude/knowledge/ graph. Agent can worktree these at runtime.
+  nelson:
+    role: Core PMS. Spring Boot monolith. Reservations, rooms, pricing, availability, payments, channel manager, door locks, reports. PostgreSQL + Flyway.
+    used_by_agent: YES — default worktree project, where almost every hotel-ops question gets answered.
+  nelson-user-management-service:
+    role: Cognito-backed user / password / refresh-token service. Owns `POST /api/user/login` for both initial login and refresh exchange.
+    used_by_agent: this assistant depends on it for auth (NELSON_USER_MGMT_BASE_URL).
+  nelson-tenant-management-service:
+    role: Tenant + environment management. Source of truth for the nelson-tenants DynamoDB table contents.
+  nelson-client-configuration:
+    role: Per-client static configuration (branding, feature flags, tenant overrides).
+  nelson-management-ui:
+    role: MUI — Management UI. React frontend consumed by hotel staff. Hits `/api/management/secure/*`.
+  nelson-bui-2.0:
+    role: BUI 2.0 — public Booking UI for guests. Hits `/api/` and `/api/bui2/*`.
+  omena-mobile-app:
+    role: Mobile booking app (Omena chain). Hits `/api/m_app/*`.
+  omena-service-app:
+    role: Cleaning / maintenance staff mobile app. Hits `/api/s_app/*`.
+
+awareness_only:
+  # NOT checked out at runtime. The agent should recognize these names + their
+  # role in the Nelson ecosystem but never attempt to deep-dive them.
+  CDP:
+    github: ABRGI/CDP (not verified — no deploy key)
+    local_clone: /home/sandeep/nelson/CDP
+    role: omena-cdp-inflow. Customer Data Platform pipeline on GCP. BigQuery sink for reservation events (dataset `nelson-reservations`). GCP Cloud Functions (functions-framework). Entry: functions/src/.
+    language: typescript
+    note: Reservation events from Nelson are forwarded here for analytics.
+
+  nelson-short-links-service:
+    github: ABRGI/nelson-short-links-service
+    local_clone: /home/sandeep/nelson/nelson-short-links-service
+    role: Standalone Node/Express service (MS7 in the Nelson microservice ladder). Generates short links for Nelson. DynamoDB-backed. Has a `manager` and a `redirect` process.
+    note: Independent service, used for email/SMS links and marketing campaigns.
+
+  nprice-core:
+    github: ABRGI/nprice-core
+    local_clone: /home/sandeep/nelson/nprice-core
+    role: Dynamic pricing core. Computes prices from reservation history (current + historical). Offline computation pipeline, not a live API.
+    note: Sister service to nprice-integration. Documentation + price_data / price_figures artifacts live in-repo.
+
+  nprice-integration:
+    github: ABRGI/nprice-integration
+    local_clone: /home/sandeep/nelson/nprice-integration
+    role: Integration API in front of the nprice core DB (Node/Express, formerly Clojure — clojure-archived/ is the old code). Nelson pushes reservations in when made; Nelson pulls dynamic prices out when needed.
+    note: Complements nprice-core by sourcing the input data it needs.
+
+  omena-wordpress:
+    github: ABRGI/omena-wordpress
+    local_clone: /home/sandeep/nelson/omena-wordpress
+    role: Omena marketing site (WordPress via Roots/Bedrock). PHP + composer. Not a Nelson runtime dependency — marketing content only.
+    note: Ignore for any hotel-ops question. Only relevant if the user asks about the marketing site itself.
+
+rule_for_agent: >-
+  If the user asks about one of the awareness_only repos, acknowledge what it is
+  from this file and defer further detail ("that service is outside my current
+  training — want me to escalate?"). Do NOT speculate about their internals.

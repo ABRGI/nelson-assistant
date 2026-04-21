@@ -1,0 +1,51 @@
+schema: 1
+node: slack
+purpose: Slack app wiring. Update manifest + scopes here before adding new events or commands.
+
+app:
+  id: A0AT9NPFQDV
+  workspace: Digitalist Group (T024G95BR)
+  bot_user: U0ATXEL94SJ
+  bot_name: Nelson Assistant
+  manifest_file: slack/app-manifest.yml
+
+scopes:
+  - app_mentions:read
+  - chat:write
+  - chat:write.public
+  - commands
+  - im:history
+  - im:read
+  - im:write
+  - reactions:write
+  - users:read
+
+slash_commands:
+  /nelson:
+    desc: Ask Nelson anything. First use auto-issues a sign-in button in-thread.
+    handler: src/slack/commands.ts
+  /nelson-auth:
+    desc: Force a fresh sign-in link (DM-only; e.g. to switch Nelson users).
+  /nelson-help:
+    desc: Show command reference.
+
+events:
+  - app_mention           # handler: src/slack/events.ts
+  - message.im            # DM handler
+
+modes:
+  socket_mode_enabled: true        # manifest setting
+  selected_at_runtime_by: presence of SLACK_APP_TOKEN in runtime secret / env
+  socket_mode_behavior: Slack load-balances WebSocket events across ALL connected holders using the same app token. If ECS AND local dev both connect, events round-robin. Scale ECS to 0 when iterating locally — see .claude/knowledge/dev-loop.yaml.
+
+custom_sign_in_page:
+  route: GET /auth/login/:nonce and POST /auth/login/:nonce
+  handler: src/auth/web.ts buildAuthRouter()
+  nonce_ttl: 10 min
+  attempts: 3
+  flow: user types password → bot calls POST /api/user/login on user-management-service → refresh_token saved encrypted → ':white_check_mark: Linked' DM
+  v2_plan: replace with native Nelson SSO handoff (coordinate with user-management-service owner).
+
+block_actions:
+  - action_id: nelson_auth_link
+    purpose: The 'Sign in to Nelson' button. Just opens the URL; no server-side action handler needed.

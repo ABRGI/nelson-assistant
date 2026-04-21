@@ -8,6 +8,8 @@ import type { AskJob, JobHandler } from '../queue/inproc.js';
 import type { WorktreePool } from '../worktree/pool.js';
 import { logger } from '../observability/logger.js';
 import { ThreadProgressMessage } from '../slack/renderer.js';
+import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
+import type { HaikuClassifier } from './classifier.js';
 import { runAgent } from './runner.js';
 
 export interface PipelineDeps {
@@ -17,6 +19,7 @@ export interface PipelineDeps {
   cognito: CognitoExchanger;
   nonces: NonceStore;
   worktrees: WorktreePool;
+  classifier: HaikuClassifier;
   defaultProject: string;
   defaultBranch: string;
   sonnetModelId: string;
@@ -44,6 +47,39 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       return;
     }
 
+    const history = await loadConversationHistory(slack, {
+      channel: job.channel,
+      source: job.source,
+      threadTs: job.threadTs,
+      ...(job.threadTs ? { excludeTs: job.threadTs } : {}),
+    });
+
+    // Kick off the Cognito refresh alongside the classifier so the ~200-500ms
+    // exchange overlaps with Haiku. We discard the result on the conversational
+    // branch; refresh tokens are reusable so the "extra" call is harmless.
+    const tokensSettled = (async () => deps.cognito.exchangeRefresh(
+      job.userId,
+      binding.nelsonSub,
+      await deps.bindings.readRefreshToken(binding),
+    ))().then(
+      (t) => ({ ok: true as const, tokens: t }),
+      (err: unknown) => ({ ok: false as const, err }),
+    );
+
+    const verdict = await deps.classifier.classify(job.text, history);
+    if (verdict.type === 'conversational') {
+      await tokensSettled;
+      await slack.chat.postMessage({
+        channel: job.channel,
+        thread_ts: threadTs,
+        text: verdict.reply,
+        mrkdwn: true,
+      });
+      await swapReaction(slack, job, looksLikeQuestion(verdict.reply) ? 'question' : 'white_check_mark');
+      logger.info({ slackUserId: job.userId, reason: 'conversational' }, 'job completed (no agent run)');
+      return;
+    }
+
     let tenant: ClientRecord;
     try {
       tenant = deps.resolveTenant();
@@ -57,11 +93,9 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       return;
     }
 
-    let tokens;
-    try {
-      const refreshToken = await deps.bindings.readRefreshToken(binding);
-      tokens = await deps.cognito.exchangeRefresh(job.userId, binding.nelsonSub, refreshToken);
-    } catch (err) {
+    const tokenResult = await tokensSettled;
+    if (!tokenResult.ok) {
+      const err = tokenResult.err;
       if (err instanceof RefreshTokenInvalid) {
         logger.info({ slackUserId: job.userId }, 'refresh token rejected, prompting re-auth');
         await swapReaction(slack, job, 'question');
@@ -83,6 +117,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       });
       return;
     }
+    const tokens = tokenResult.tokens;
 
     const progress = await ThreadProgressMessage.create(
       slack,
@@ -91,7 +126,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       ':thinking_face: On it…',
     );
 
-    const question = await buildQuestion(slack, job);
+    const question = renderHistoryForAgentPrompt(history, job.text);
 
     const lease = await deps.worktrees.acquire(deps.defaultProject, deps.defaultBranch);
     try {
@@ -115,7 +150,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
             for (const block of event.message.content) {
               if (block.type === 'tool_use') {
                 lastToolName = block.name;
-                progress.update(`:gear: running \`${block.name}\`…`);
+                progress.update(describeToolActivity(block.name, block.input));
                 if (block.name === 'mcp__nelson__escalate_to_human') escalated = true;
               }
             }
@@ -143,6 +178,41 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
   };
 }
 
+const TOOL_LABELS: Record<string, string> = {
+  mcp__nelson__escalate_to_human: ':raising_hand: Looping in a human teammate…',
+  mcp__nelson__git_log: ':mag: Checking recent code changes…',
+  mcp__nelson__psql: ':floppy_disk: Querying the Nelson database…',
+  Read: ':books: Checking the Nelson documentation…',
+  Grep: ':books: Checking the Nelson documentation…',
+  Glob: ':books: Checking the Nelson documentation…',
+  Task: ':brain: Working through the next step…',
+  Bash: ':hammer_and_wrench: Running a check…',
+};
+
+const NELSON_API_PATH_LABELS: Array<[RegExp, string]> = [
+  [/\/availability/, 'Checking availability'],
+  [/\/prices/, 'Looking up pricing'],
+  [/\/reservations\/arrivals/, "Checking today's arrivals"],
+  [/\/reservations/, 'Looking up reservations'],
+  [/\/hotels/, 'Looking up hotels'],
+  [/\/rooms/, 'Looking up rooms'],
+  [/\/(guests|customers)/, 'Looking up guests'],
+  [/\/reports/, 'Fetching a report'],
+  [/\/config/, 'Reading configuration'],
+];
+
+function describeToolActivity(toolName: string, input: unknown): string {
+  if (toolName === 'mcp__nelson__nelson_api') {
+    const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+    const method = typeof i['method'] === 'string' ? i['method'] : 'GET';
+    const path = typeof i['path'] === 'string' ? i['path'] : '';
+    const matched = NELSON_API_PATH_LABELS.find(([re]) => re.test(path.toLowerCase()));
+    const label = matched ? matched[1] : 'Calling the Nelson API';
+    return `:satellite_antenna: ${label} (${method} ${path})`;
+  }
+  return TOOL_LABELS[toolName] ?? ':hourglass_flowing_sand: Working on it…';
+}
+
 function looksLikeQuestion(text: string): boolean {
   const trimmed = text.trim().replace(/[`*_~]+$/, '').trimEnd();
   return trimmed.endsWith('?');
@@ -156,46 +226,6 @@ async function swapReaction(slack: WebClient, job: AskJob, next: string): Promis
     await slack.reactions.add({ channel: job.channel, timestamp: job.userMessageTs, name: next });
   } catch (err) {
     logger.debug({ err }, 'failed to add outcome reaction');
-  }
-}
-
-async function buildQuestion(slack: WebClient, job: AskJob): Promise<string> {
-  try {
-    let msgs: { bot_id?: string; text?: string; ts?: string }[];
-
-    if (job.source === 'dm') {
-      // DMs: load channel history (newest first → reverse for chronological order)
-      const res = await slack.conversations.history({
-        channel: job.channel,
-        limit: 20,
-      });
-      msgs = (res.messages ?? [])
-        .filter((m) => !m.subtype && 'text' in m && m.text && m.ts !== job.threadTs)
-        .reverse();
-    } else {
-      // Mentions in channels: load thread replies
-      if (!job.threadTs) return job.text;
-      const res = await slack.conversations.replies({
-        channel: job.channel,
-        ts: job.threadTs,
-        limit: 20,
-      });
-      msgs = (res.messages ?? []).filter(
-        (m) => m.ts !== job.threadTs && 'text' in m && m.text,
-      );
-    }
-
-    if (!msgs.length) return job.text;
-    const history = msgs
-      .map((m) => {
-        const role = m.bot_id ? 'Nelson Assistant' : 'User';
-        return `${role}: ${m.text}`;
-      })
-      .join('\n');
-    return `Previous conversation:\n${history}\n\nNew message: ${job.text}`;
-  } catch (err) {
-    logger.warn({ err }, 'failed to load conversation history');
-    return job.text;
   }
 }
 

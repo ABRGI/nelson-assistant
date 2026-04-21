@@ -1,0 +1,49 @@
+schema: 1
+node: stack
+language: typescript
+runtime: node22-esm
+package_manager: npm
+build: tsc -p tsconfig.json
+dev: tsx watch src/index.ts
+ts_strictness: [strict, exactOptionalPropertyTypes, noUncheckedIndexedAccess]
+
+deps:
+  web: [express, '@slack/bolt']
+  agent: ['@anthropic-ai/claude-agent-sdk', '@aws-sdk/client-bedrock-runtime']
+  aws: ['@aws-sdk/client-s3', '@aws-sdk/client-secrets-manager', '@aws-sdk/client-dynamodb', '@aws-sdk/lib-dynamodb', '@aws-sdk/credential-providers']
+  validation: [zod]
+  logging: [pino]
+  queue: [p-limit]
+  http: [undici]
+  db: [pg]
+  dev: [tsx, typescript, vitest]
+
+entry_points:
+  bootstrap: src/index.ts
+  config: src/config/env.ts
+  slack:
+    events: src/slack/events.ts        # app_mention + DM handler
+    commands: src/slack/commands.ts    # /nelson, /nelson-auth, /nelson-help
+    renderer: src/slack/renderer.ts    # throttled chat.update for streaming progress
+    history: src/slack/history.ts      # shared history loader (classifier + agent prompt)
+  auth:
+    clients: src/auth/clients.ts       # tenant registry (DynamoDB nelson-tenants)
+    binding: src/auth/binding.ts       # slack user ↔ nelson sub + encrypted refresh token
+    cognito: src/auth/cognito.ts       # POST /api/user/login refresh exchange
+    nonce: src/auth/nonce.ts
+    web: src/auth/web.ts               # custom sign-in page
+  agent:
+    pipeline: src/agent/pipeline.ts    # full job lifecycle + Haiku classifier gate
+    runner: src/agent/runner.ts        # Agent SDK query() + MCP tools + system prompt
+    classifier: src/agent/classifier.ts # Haiku pre-classifier (data_query vs conversational)
+    tools_dir: src/agent/tools/        # see agent-tools.yaml
+  worktree: src/worktree/pool.ts       # LRU bare-repo + worktrees, EFS-backed
+  queue: src/queue/inproc.ts           # p-limit bounded queue
+  storage_interfaces:
+    json_store: src/state/types.ts     # S3 or fs impl
+    secret_vault: src/secrets/types.ts # AWS Secrets Manager or fs impl
+
+tests:
+  runner: vitest
+  location: test/*.test.ts
+  covers: [classifier parsing, cognito exchange, fs-store races, nonce TTL, renderer throttling]

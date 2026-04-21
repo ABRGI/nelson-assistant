@@ -1,0 +1,56 @@
+schema: 1
+node: flow
+purpose: End-to-end lifecycle of a single Slack message.
+related: [.claude/knowledge/agent-tools.yaml, .claude/knowledge/storage.yaml]
+
+lifecycle:
+  - step: 1
+    at: src/slack/events.ts
+    what: Slack delivers app_mention / message.im / slash_command. Handler extracts (userId, channel, text, threadTs, source) into AskJob and enqueues.
+  - step: 2
+    at: src/queue/inproc.ts
+    what: InProcQueue (p-limit, concurrency 6) dispatches to the pipeline handler. Errors bubble to Slack with @escalation tag.
+  - step: 3
+    at: src/agent/pipeline.ts
+    what: Binding check via UserBindingStore. If unbound → post sign-in button (Slack block) and return.
+  - step: 4
+    at: src/slack/history.ts
+    what: Load conversation history once. Used twice — by classifier and, if needed, by agent prompt.
+  - step: 5
+    at: src/agent/classifier.ts
+    what: Haiku pre-classifier. Returns {type:'data_query'} or {type:'conversational', reply}. On conversational, pipeline posts the reply, swaps reaction, returns — no worktree, no Sonnet run.
+  - step: 6
+    at: src/agent/pipeline.ts
+    what: resolveTenant() → Stage 1 picks DEFAULT_TENANT_ID; errors at call time if unset + >1 tenant.
+  - step: 7
+    at: src/auth/cognito.ts
+    what: Exchange refresh_token + nelsonSub → IdToken via POST {NELSON_USER_MGMT_BASE_URL}/api/user/login. RefreshTokenInvalid auto-reposts sign-in.
+  - step: 8
+    at: src/worktree/pool.ts
+    what: WorktreePool.acquire(project, branch). LRU on EFS, one bare repo per project, evicts when at cap. No auto-fetch; use GET /refresh.
+  - step: 9
+    at: src/agent/runner.ts
+    what: runAgent() starts query() from Agent SDK. System prompt pulls from loadSystemSeed + worktree CLAUDE.md. Each tool_use streamed into ThreadProgressMessage via describeToolActivity.
+  - step: 10
+    at: src/agent/pipeline.ts
+    what: Finalize progress message with result text. Swap reaction ✅ / ❓ (escalated or trailing '?') / ❌. Release worktree lease.
+
+reactions:
+  on_user_message:
+    initial: hourglass_flowing_sand (⏳)
+    success: white_check_mark (✅)
+    needs_input: question (❓)    # escalate tool called OR answer ends with '?'
+    error: x (❌)
+
+classifier_contract:
+  data_query: full pipeline (worktree + Sonnet + tools)
+  conversational: {reply: string} posted directly; no worktree, no Sonnet
+  failure_mode: defaults to data_query on any error — fail closed, never miss real questions
+
+tenant_resolution_stage1:
+  if: DEFAULT_TENANT_ID set
+  then: use that record from ClientRegistry
+  elif: exactly one tenant registered
+  then: use it
+  else: throw — user must set DEFAULT_TENANT_ID
+  v2: per-query routing from JWT `environmentids` claim

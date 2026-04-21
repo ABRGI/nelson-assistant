@@ -1,0 +1,60 @@
+schema: 1
+node: storage
+purpose: What lives where. Mode toggle STORAGE_MODE=fs (dev) or aws (prod/staging).
+related: [.claude/knowledge/flow.yaml]
+
+interfaces:
+  json_store:
+    file: src/state/types.ts
+    impls: [src/state/s3.ts, src/state/fs.ts]
+    semantics: get/put/list/delete with optional If-Match ETag; conflicts throw ConditionFailedError (the only retry signal).
+  secret_vault:
+    file: src/secrets/types.ts
+    impls: [src/secrets/aws.ts, src/secrets/fs.ts]
+  rule: Consumer code imports the interface, never S3Client / SecretsManagerClient directly.
+
+s3_bucket:
+  name: nelsonassistant-nelson-assistant-state
+  region: eu-central-1
+  kms: customer-managed CMK (KMS-encrypted at rest)
+  versioning: on
+  object_lock: configured on `audit/` prefix (planned use — audit log not yet written)
+  layout:
+    - users/<hmac-sha256(slackUserId, idHashKey)>.json   # UserBinding + AES-256-GCM-encrypted refresh token
+    - clients/<tenantId>.json                            # dev only; prod uses DynamoDB
+    - auth/nonce/<nonce>.json                            # pending sign-in nonces, 10-min TTL, 3 attempts
+    - threads/<thread_ts>.json                           # NOT YET WRITTEN — deferred
+    - audit/<yyyy-mm-dd>/<conversation_id>.jsonl         # NOT YET WRITTEN — deferred
+
+dynamodb:
+  table: nelson-tenants
+  region: eu-central-1
+  access: DocumentClient via @aws-sdk/lib-dynamodb
+  used_by: src/auth/clients.ts ClientRegistry.load()
+  loader: full Scan at boot (small N)
+  tenant_shape:
+    fields: [tenantId (UUID, PK), displayName, sitehost, ...]
+    derived: nelsonApiBaseUrl = sitehost + '/api'
+
+secrets_manager:
+  runtime_secret:
+    name: nelson-assistant/runtime
+    region: eu-central-1
+    shape: {slackSigningSecret, slackBotToken, slackAppToken?, tokenEncryptionKey, idHashKey, githubDeployKey?, psqlReadOnlyUrl?}
+    fetched_at_boot: src/config/env.ts fetchRuntimeSecret()
+    bypassed_in_dev: when SLACK_SIGNING_SECRET + SLACK_BOT_TOKEN are inline in .env
+
+crypto:
+  file: src/crypto/token-cipher.ts
+  refresh_token_cipher: AES-256-GCM with tokenEncryptionKey
+  id_hash: HMAC-SHA256 with idHashKey (used to derive S3 filenames from Slack user IDs so raw IDs aren't exposed)
+
+efs:
+  mount: /work (prod), ./local-state/work (dev)
+  layout:
+    - .bare/<project>.git     # one bare clone per project, push-poisoned
+    - work/<project>/<slot>/  # LRU worktrees, slot = integer index
+  sizing: maxPerProject=4 (default in src/index.ts)
+  git_env:
+    safe_directory: '*' (via GIT_CONFIG_COUNT/KEY_0/VALUE_0 — EFS uid mismatch with ECS task)
+    ssh_cmd: set when githubDeployKey present — ssh -i <key> -o StrictHostKeyChecking=accept-new -o BatchMode=yes

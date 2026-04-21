@@ -1,0 +1,42 @@
+schema: 1
+node: deploys
+purpose: Where and how this service runs in production.
+
+aws:
+  account: '459045743560'
+  region: eu-central-1
+  profile_for_dev: nelson
+
+production:
+  cluster: NelsonAssistant-nelson-assistant
+  service: NelsonAssistant-nelson-assistant
+  desired_count: 1              # 2+ untested but storage supports it
+  alb_dns: assistant.nelson.management
+  log_group: /ecs/NelsonAssistant-nelson-assistant
+  health_check_path: /health    # register BEFORE passing Express to Bolt
+  container_port: 3000
+
+ecr:
+  repo: 459045743560.dkr.ecr.eu-central-1.amazonaws.com/nelsonassistant-nelson-assistant
+  image_tag_convention: ':latest' (update flow relies on --force-new-deployment)
+
+cdk:
+  app: infra/bin/infra.ts
+  stacks:
+    - infra/lib/nelson-assistant-hosted-zone-stack.ts
+    - infra/lib/nelson-assistant-vpc-stack.ts
+    - infra/lib/nelson-assistant-peering-stack.ts   # empty until client VPCs added
+    - infra/lib/nelson-assistant-service-stack.ts   # ALB + ECS + EFS + S3 + task role
+  deploy_cmd: AWS_PROFILE=nelson CDK_DEPLOY_ACCOUNT=459045743560 npx cdk deploy NelsonAssistantNelsonAssistantService --require-approval never
+
+image_update_flow:
+  - docker build -t nelson-assistant .
+  - docker tag nelson-assistant:latest 459045743560.dkr.ecr.eu-central-1.amazonaws.com/nelsonassistant-nelson-assistant:latest
+  - docker push 459045743560.dkr.ecr.eu-central-1.amazonaws.com/nelsonassistant-nelson-assistant:latest
+  - aws ecs update-service --cluster NelsonAssistant-nelson-assistant --service NelsonAssistant-nelson-assistant --force-new-deployment --region eu-central-1
+
+operations:
+  tail_logs: aws logs tail /ecs/NelsonAssistant-nelson-assistant --follow --region eu-central-1
+  trigger_repo_refresh: GET https://assistant.nelson.management/refresh?project=<project>
+  scale_to_zero_for_local_dev: aws ecs update-service --cluster NelsonAssistant-nelson-assistant --service NelsonAssistant-nelson-assistant --desired-count 0 --region eu-central-1
+  restore_prod: aws ecs update-service ... --desired-count 1

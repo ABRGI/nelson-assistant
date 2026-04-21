@@ -1,0 +1,42 @@
+schema: 1
+node: agent-tools
+purpose: MCP tools exposed to the Sonnet agent. The agent's ONLY way to reach outside the worktree.
+related: [.claude/knowledge/flow.yaml, .claude/knowledge/storage.yaml]
+
+how_to_add_a_tool:
+  doc: /add-tool skill in .claude/skills/add-tool/
+  manual_steps:
+    - Create src/agent/tools/<name>.ts — export a Zod input schema + async handler.
+    - Register it in src/agent/runner.ts under mcpServers.nelson.instance.tools via tool() helper.
+    - Allowlist as `mcp__nelson__<name>` in allowedTools.
+    - Document authority boundary at top of tool file.
+    - Add a unit test for the pure logic.
+
+tools:
+  - name: mcp__nelson__nelson_api
+    file: src/agent/tools/nelson_api.ts
+    purpose: Only HTTP client the agent gets. Base URL + user IdToken injected by pipeline — agent does not set them.
+    input: {method, path (must start with /api/), body?, query?}
+    authority: Acts AS the asking Slack user; Nelson RBAC applies. Read-heavy; write ops the agent deems destructive should be escalated instead.
+    logs: Each call logged as `nelson_api call` with {tenantId, slackUserId, method, path, status, durationMs}.
+
+  - name: mcp__nelson__escalate_to_human
+    file: src/agent/tools/escalate.ts
+    purpose: Tag ESCALATION_SLACK_USER_ID in thread and STOP. Use for destructive, ambiguous, or permission-blocked actions.
+    side_effect: Sets pipeline.escalated=true → reaction swaps to ❓.
+
+  - name: mcp__nelson__git_log
+    file: src/agent/tools/git_log.ts
+    purpose: Read-only git log on the current worktree. Answers "what changed on develop vs release/X".
+    authority: No push, no branch ops — worktree has push-poisoned origin.
+
+native_tools_in_allowlist:
+  - Read
+  - Grep
+  - Glob
+  - Bash(git log:*) / Bash(git show:*) / Bash(git diff:*) / Bash(git status:*)
+  - Bash(psql:*)  # only usable when psqlReadOnlyUrl env is set
+
+progress_labels:
+  source: src/agent/pipeline.ts → describeToolActivity() + describeNelsonApiCall()
+  rule: Never expose raw tool names in Slack. Hotel-ops-friendly phrasing. For nelson_api, path-aware label + (method path) in parens.

@@ -108,6 +108,28 @@ export class NelsonAssistantServiceStack extends cdk.Stack {
             actions: ['dynamodb:Scan', 'dynamodb:GetItem'],
             resources: [`arn:aws:dynamodb:${this.region}:${this.account}:table/nelson-tenants`],
         }));
+        // DescribeLogGroups cannot be scoped to a resource ARN by AWS; the other
+        // log actions below are scoped to /ecs/* and /aws/codebuild/*.
+        taskRole.addToPolicy(new iam.PolicyStatement({
+            actions: ['logs:DescribeLogGroups'],
+            resources: ['*'],
+        }));
+        taskRole.addToPolicy(new iam.PolicyStatement({
+            actions: [
+                'logs:DescribeLogStreams',
+                'logs:GetLogEvents',
+                'logs:FilterLogEvents',
+                'logs:StartQuery',
+                'logs:StopQuery',
+                'logs:GetQueryResults',
+            ],
+            resources: [
+                `arn:aws:logs:${this.region}:${this.account}:log-group:/ecs/*`,
+                `arn:aws:logs:${this.region}:${this.account}:log-group:/ecs/*:*`,
+                `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/codebuild/*`,
+                `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/codebuild/*:*`,
+            ],
+        }));
 
         // ── ECS cluster + task definition ─────────────────────────────────────
         const logGroup = new logs.LogGroup(this, 'LogGroup', {

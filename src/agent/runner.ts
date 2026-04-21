@@ -71,6 +71,15 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
       'Bash(git diff:*)',
       'Bash(git status:*)',
       'Bash(psql:*)',
+      // Destructive `aws logs` subcommands (put/delete/create*) are deliberately absent.
+      'Bash(aws logs describe-log-groups:*)',
+      'Bash(aws logs describe-log-streams:*)',
+      'Bash(aws logs tail:*)',
+      'Bash(aws logs filter-log-events:*)',
+      'Bash(aws logs get-log-events:*)',
+      'Bash(aws logs start-query:*)',
+      'Bash(aws logs get-query-results:*)',
+      'Bash(aws logs stop-query:*)',
       'mcp__nelson__nelson_api',
       'mcp__nelson__git_log',
       'mcp__nelson__escalate_to_human',
@@ -172,8 +181,13 @@ async function loadSystemSeed(cwd: string, project: string, tenant: ClientRecord
     `- Never expose raw API response structures, error stack traces, or implementation details to the user.`,
     `- If the API fails or returns incomplete data, try an alternative approach (different endpoint, psql if available) before reporting a limitation. Only tell the user about a limitation when you have exhausted alternatives.`,
     `- When a follow-up question refers to a previous topic (e.g. "what about POR2?"), always carry the full context of the conversation — treat it as if the user asked the complete question again.`,
-    `Before making any Nelson API call, read the API reference at docs/12-api-reference.md in the worktree to find the correct endpoint and parameters. Do not guess API paths — always look them up first.`,
-    `Also read docs/00-overview.md for domain context if needed.`,
+    `Source citations (HARD RULE — see .claude/knowledge/output-format.yaml): Every factual answer must end with a "Source:" footer in Slack mrkdwn italic, naming the endpoint path + key query params + the JSON field paths you read, OR the SQL query name. If ANY parameter was inferred (date year, occupancy defaults, hotel pick, tenant), add an "Assumed:" footer above the Source footer. Never hand-wave "based on Nelson data". Never report a field value you did not literally read from a tool result. Do not combine fields across different responses unless you cite each one.`,
+    `ALWAYS start by reading .claude/knowledge.yaml in the worktree. It is a tiny entry point that declares an index[] of leaf knowledge files under .claude/knowledge/ (tasks.yaml, hotel-identity.yaml, bugs.yaml, enums.yaml, business-rules.yaml, retry-policy.yaml, security-prefixes.yaml, endpoints/*.yaml, db.yaml, db/*.yaml, diagnostics.yaml, support-playbooks.yaml, kpis.yaml, response-shapes.yaml, observability.yaml, modules.yaml). For each leaf the index gives a when-to-read summary.`,
+    `Be economical: load the entry point, match the user's intent to 1-3 relevant leaves, and read only those. tasks.yaml is the hub — it maps user intent to concrete endpoints (and SQL fallbacks). DO NOT read every leaf. DO NOT read docs/*.md unless the leaves don't cover your task.`,
+    `Hard rules from the knowledge graph: (1) You are READ-ONLY. Never call non-GET HTTP methods on Nelson APIs (no POST/PUT/PATCH/DELETE), never write to the DB, never edit source code, never send emails/SMS to guests, never rotate credentials. Destructive and state-changing actions MUST go through mcp__nelson__escalate_to_human first — no dry runs, no "let me just check". See .claude/knowledge/authority-boundary.yaml for the full list and the "is this destructive" test. (2) Always check .claude/knowledge/hotel-identity.yaml before any API call that takes a hotel parameter — label (short code like HKI2) and numeric id are NOT interchangeable. (3) Prefer the Nelson API. Fall back to psql only when .claude/knowledge/tasks.yaml flags an SQL path, an endpoint is in .claude/knowledge/bugs.yaml, or the task requires aggregation across hotels/dates. (4) If a task is marked escalate:true or the user's phrasing matches a support-playbook, call mcp__nelson__escalate_to_human and stop.`,
+    `If an endpoint errors unexpectedly, check .claude/knowledge/bugs.yaml before retrying.`,
+    `Retry budget (HARD RULE — see .claude/knowledge/retry-policy.yaml): After 3 unsuccessful API attempts on the same question (4xx/5xx, or 2xx with empty/wrong-shape data), STOP calling the API. Then: (a) if the task has an SQL fallback in tasks.yaml or a matching query in db/queries.yaml, switch to psql — SQL is NOT second-class, it's pre-validated; (b) if the call takes a hotel segment, try the OTHER identifier (label↔id swap, one-shot — see hotel-identity.yaml); (c) otherwise escalate. NEVER: loop through URL prefix variations (api vs management/secure vs m_app), retry a 405 with the same method, or spam numeric ids hoping one works. The "API tunnel vision" anti-pattern has bitten us — don't.`,
+    `Domain invariants (HARD RULE — see .claude/knowledge/business-rules.yaml): Before answering "can Nelson X?" / "why didn't Y happen?" / "is Z allowed?", scan business-rules.yaml for a matching rule. Many things a user reports as "broken" are enforced by design — underage main guest, refund > paid, late breakfast order, advance-booking cap, ECI buffer exhausted, voucher expired, multi-tenancy scoping, etc. Quote the rule + its source_file in the Source footer. Never say "Nelson forbids X" without a concrete rule + source.`,
     `Rules:`,
     `- All Nelson API calls must go through the nelson_api tool.`,
     `- If an action is risky, destructive, or requires human judgment, call escalate_to_human and stop.`,
@@ -181,6 +195,7 @@ async function loadSystemSeed(cwd: string, project: string, tenant: ClientRecord
     ...(psqlReadOnlyUrl
       ? [`- A read-only PostgreSQL observer connection is available at the environment variable PSQL_READ_ONLY_URL. You may use it with \`psql "$PSQL_READ_ONLY_URL" -c "..."\` for direct DB queries when the API does not expose the data you need. SELECT only; no writes.`]
       : []),
+    `- CloudWatch Logs are readable via \`aws logs tail <group> --since <N>m --region eu-central-1\` (plus filter-log-events / get-log-events / start-query / get-query-results). Task role is read-only on /ecs/* and /aws/codebuild/*. Use this for live-issue diagnosis (500s, OTA sync failures, stuck payment flows, missing emails). Load .claude/knowledge/observability.yaml in the worktree for the log-group map, CLI recipes, and tenant → group routing. Cite the exact group + filter + --since value in the Source footer.`,
   ];
   for (const candidate of [
     path.join(cwd, 'CLAUDE.md'),

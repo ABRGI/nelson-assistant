@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { App, ExpressReceiver, LogLevel, SocketModeReceiver } from '@slack/bolt';
+import { BedrockRuntimeClient } from '@aws-sdk/client-bedrock-runtime';
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import express from 'express';
@@ -24,6 +25,7 @@ import { InProcQueue } from './queue/inproc.js';
 import { registerCommands } from './slack/commands.js';
 import { registerEvents } from './slack/events.js';
 import { makeHandler } from './agent/pipeline.js';
+import { HaikuClassifier } from './agent/classifier.js';
 
 async function main(): Promise<void> {
   const config = await loadConfig();
@@ -45,6 +47,11 @@ async function main(): Promise<void> {
   const worktrees = new WorktreePool(config.WORKSPACE_ROOT, buildRemotes(), 4, sshKeyPath);
   await worktrees.init();
 
+  const classifier = new HaikuClassifier({
+    haikuModelId: config.BEDROCK_HAIKU_MODEL_ID,
+    client: new BedrockRuntimeClient(awsClientConfig(config)),
+  });
+
   const { app, startBolt, maybeExpress } = buildSlackApp(config);
 
   const queue = new InProcQueue(6, async (channel, threadTs, message) => {
@@ -61,6 +68,7 @@ async function main(): Promise<void> {
     cognito,
     nonces,
     worktrees,
+    classifier,
     defaultProject: 'nelson',
     defaultBranch: 'develop',
     sonnetModelId: config.BEDROCK_SONNET_MODEL_ID,

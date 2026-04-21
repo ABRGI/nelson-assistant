@@ -1,0 +1,42 @@
+schema: 1
+node: conventions
+purpose: Must-follow rules before editing code in this repo.
+
+typescript:
+  strict: true
+  exactOptionalPropertyTypes: true
+  noUncheckedIndexedAccess: true
+  esm_imports: ts source uses `.js` import extensions (ESM requirement)
+  never_loosen: without a documented reason
+
+validation:
+  rule: Zod at every trust boundary.
+  boundaries: [env vars, MCP tool inputs, S3 payloads, JWT claims, Slack payloads]
+  pattern: export both the schema and `z.infer<typeof X>` type
+
+logging:
+  file: src/observability/logger.ts (pino)
+  never: console.log
+  redaction_list_already_covers: ['*.token', '*.password', 'SecretString']
+  add_new_sensitive_fields: extend the redaction list immediately
+
+errors:
+  throw_typed: no swallowing
+  retry_signal: only ConditionFailedError (ETag mismatch). Everything else propagates.
+
+interface_discipline:
+  rule: Consumers import the interface (JsonStore, SecretVault), never S3Client / SecretsManagerClient / DynamoDBClient.
+  rationale: one fs impl for dev + one aws impl for prod, both behind the same interface.
+
+comments:
+  default: none
+  allowed: short comment explaining the non-obvious WHY (hidden constraint, workaround, invariant)
+  forbidden: multi-paragraph docstrings, narrative comments, references to the current task/caller
+
+user_facing_text:
+  slack_messages: hotel-ops voice, concise. Emojis allowed ONLY in Slack output, never in code comments or logs.
+  progress_updates: always via describeToolActivity (src/agent/pipeline.ts); never raw tool names.
+
+scope_discipline:
+  rule: New code lands behind the same abstractions as existing code. Don't design for hypothetical future needs.
+  before_pr: npm run typecheck && npm test

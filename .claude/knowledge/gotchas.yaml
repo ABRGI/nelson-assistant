@@ -1,0 +1,44 @@
+schema: 1
+node: gotchas
+purpose: Things that have bitten us. Check here before retrying a failing operation.
+
+express_bolt_routing:
+  symptom: GET /health returns 404 even though the route is registered.
+  cause: Bolt's ExpressReceiver mounts its router via app.use() in its constructor. Any routes registered on receiver.app AFTER construction are shadowed.
+  fix: Register /health and /ready on the express app BEFORE passing it to `new ExpressReceiver({ app: expressApp, ... })`. See src/index.ts buildSlackApp().
+
+efs_git_safe_directory:
+  symptom: "fatal: detected dubious ownership in repository"
+  cause: EFS mount owned by a different uid than the ECS task user.
+  fix: Already set in WorktreePool.gitEnv via GIT_CONFIG_COUNT=1 + KEY_0=safe.directory + VALUE_0='*'.
+
+worktree_checkout_reset_fails:
+  symptom: `git reset --hard origin/<branch>` fails in a bare-clone worktree.
+  cause: Bare clones don't create remote-tracking refs on `git worktree add`.
+  fix: Use `git checkout -f <branch>` + `git clean -fd`. Already in WorktreePool.checkoutBranch.
+
+no_autofetch_on_acquire:
+  symptom: Agent reads stale code after a fresh push.
+  cause: By design — `acquire()` does not fetch; only clones if the bare repo is missing.
+  fix: Call `GET /refresh?project=<p>` or `GET /refresh` (all).
+
+push_poisoning:
+  symptom: Attempted git push fails with "no-push://read-only".
+  cause: By design — after bare clone, `origin` push URL is set to `no-push://read-only` so accidental pushes fail loudly.
+
+socket_mode_vs_http_mode:
+  rule: Only one per app token. Scale ECS to 0 when running local socket mode, or prod and local split events round-robin.
+
+port_mismatch_in_dev:
+  symptom: Sign-in link in Slack 404s in the browser.
+  cause: PORT env var (where Express actually listens) disagrees with AUTH_CALLBACK_BASE_URL (what the link points at).
+  fix: Keep them in sync. Locally both should be 3100.
+
+runtime_secret_bypass_in_dev:
+  behavior: If isDev AND SLACK_SIGNING_SECRET + SLACK_BOT_TOKEN are inline in .env, src/config/env.ts skips Secrets Manager fetch and builds runtime from env.
+  implication: githubDeployKey cannot be supplied via this inline path today — worktree git clones rely on the host's default SSH creds (~/.ssh/).
+
+reactions_remove_no_reaction:
+  symptom: `reactions.remove` returns `no_reaction` in logs.
+  cause: The hourglass reaction was never added (fast path) or already removed.
+  severity: benign. swapReaction() swallows it with a try/catch.

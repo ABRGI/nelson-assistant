@@ -1,0 +1,88 @@
+schema: 1
+node: observability
+purpose: CloudWatch log groups for the Nelson ecosystem. Agent uses these to tail / filter logs when diagnosing live issues.
+related: [.claude/knowledge/ecosystem.yaml, .claude/knowledge/deploys.yaml]
+
+aws:
+  account: '459045743560'
+  region: eu-central-1
+  cli_auth: Runtime uses the ECS task role; dev uses AWS_PROFILE=nelson.
+
+log_groups:
+  ecs:
+    pattern: /ecs/<env>-<tenant>-nelson
+    env_values: [prod, stg, staging, demo]
+    tenant_values: [omena, salo]
+    groups:
+      - /ecs/prod-omena-nelson            # Omena production (most traffic)
+      - /ecs/prod-salo-nelson             # SaloHotels production
+      - /ecs/stg-omena-nelson             # Omena staging
+      - /ecs/stg-salo-nelson              # SaloHotels staging
+      - /ecs/staging-salo-nelson          # legacy/duplicate naming — older deploys landed here
+      - /ecs/demo-nelson                  # demo environment
+      - /ecs/NelsonAssistant-nelson-assistant   # this service
+
+  codebuild:
+    pattern: /aws/codebuild/<build-project>
+    purpose: CI/CD build logs. Useful when "deploy pipeline failed" but not for runtime incidents.
+    examples:
+      - /aws/codebuild/prod-omena-nelson
+      - /aws/codebuild/prod-salo-nelson
+      - /aws/codebuild/prod-omena-nelson-management-ui
+
+  lambda:
+    pattern: /aws/lambda/<function-name>
+    purpose: Ancillary Lambdas (DB backups, RDS snapshot export, CDK custom resources). Rarely relevant for ops questions.
+
+web_console_url_template: >-
+  https://459045743560-uenlunxy.eu-central-1.console.aws.amazon.com/cloudwatch/home?region=eu-central-1#logsV2:log-groups/log-group/$252Fecs$252F<log-group-name>
+  (URL-encode slashes as $252F)
+
+cli_recipes:
+  tail_live:
+    cmd: aws logs tail <log-group> --follow --region eu-central-1
+    example: aws logs tail /ecs/prod-omena-nelson --follow --region eu-central-1
+  last_n_minutes:
+    cmd: aws logs tail <log-group> --since <N>m --region eu-central-1
+    example: aws logs tail /ecs/prod-omena-nelson --since 15m --region eu-central-1
+  filter_by_substring:
+    cmd: aws logs filter-log-events --log-group-name <log-group> --start-time <epoch_ms> --filter-pattern "<substring>" --region eu-central-1
+    example_substrings: ['ERROR', 'Exception', 'booking_channel_reservation_id', '<uuid>', '<reservation_code>']
+  by_request_id:
+    cmd: aws logs filter-log-events --log-group-name <log-group> --filter-pattern "<request-id>"
+
+routing_by_tenant:
+  rule: Map the user's tenant/hotel to the log group. Omena hotel → prod-omena-nelson. SaloHotels → prod-salo-nelson.
+  discovery:
+    - Tenant registry (DynamoDB `nelson-tenants`) has `sitehost` per tenant — the env/tenant prefix usually matches.
+    - If unsure, ask the user which environment they're on.
+
+when_to_read_logs:
+  - User reports a 500 from Nelson API with no obvious cause — stack trace lives in the ECS log for that tenant.
+  - OTA sync failure where the `ota_failed_reservation` row's `error` column is truncated — full stack is in logs.
+  - Email / SMS didn't go out — look for the send event in the ECS log around the expected time.
+  - Payment flow stuck — log shows the upstream Paytrail/Tyl/Fennoa response.
+
+wiring_status:
+  graph: documented here.
+  runtime_tool_access:
+    status: WIRED (2026-04-21).
+    allowlisted_bash_prefixes:
+      - Bash(aws logs describe-log-groups:*)
+      - Bash(aws logs describe-log-streams:*)
+      - Bash(aws logs tail:*)
+      - Bash(aws logs filter-log-events:*)
+      - Bash(aws logs get-log-events:*)
+      - Bash(aws logs start-query:*)
+      - Bash(aws logs get-query-results:*)
+      - Bash(aws logs stop-query:*)
+    iam_policy:
+      location: infra/lib/nelson-assistant-service-stack.ts — TaskRole policy
+      actions_read: [logs:DescribeLogGroups, logs:DescribeLogStreams, logs:GetLogEvents, logs:FilterLogEvents, logs:StartQuery, logs:StopQuery, logs:GetQueryResults]
+      resources_scoped_to: /ecs/* + /aws/codebuild/* (DescribeLogGroups needs `*` because AWS doesn't allow scoped ARNs for that action)
+      no_writes: Destructive log actions (Put*, Delete*, Create*) are NOT granted.
+    image: AWS CLI v2 is installed in the runtime Docker image (Dockerfile, runtime stage).
+  rule_for_agent:
+    - Any aws logs subcommand outside the allowlist (delete-log-group, put-log-events, create-*, etc.) is NOT callable. Do not retry with shell tricks.
+    - Cite the log group + filter + --since value in the Source footer of the Slack reply.
+    - Cross-tenant log aggregation requires hitting each group separately — no single endpoint spans tenants.

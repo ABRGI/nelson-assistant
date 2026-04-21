@@ -1,0 +1,34 @@
+schema: 1
+node: dev-loop
+purpose: How to iterate locally without pushing to AWS each change.
+
+local_socket_mode:
+  prereqs:
+    - npm install
+    - cp .env.example .env (fill SLACK_* + ESCALATION_SLACK_USER_ID)
+    - STORAGE_MODE=fs (default in dev — no S3/Secrets Manager needed)
+    - SLACK_APP_TOKEN in .env → triggers Socket Mode automatically
+    - AWS_PROFILE=nelson for DynamoDB (nelson-tenants) + Bedrock
+  run: npm run dev       # tsx watch src/index.ts
+  smoke_flow: See ../SMOKE_TEST.md
+
+remote_dev_vm:
+  base_path_on_vm: /home/sandeep/nelson/
+  sibling_repos: cloned under the same parent; see .claude/knowledge/ecosystem.yaml
+  ssh_tunnel_for_auth_page: ssh -L 3100:localhost:3100 <vm-host>
+  port_convention: PORT must match AUTH_CALLBACK_BASE_URL (both 3100 locally).
+
+avoid_prod_collisions:
+  why: Slack socket mode load-balances across ALL connected clients on the same app token; if prod + local are both up, events round-robin.
+  steps:
+    - AWS_PROFILE=nelson aws ecs update-service --cluster NelsonAssistant-nelson-assistant --service NelsonAssistant-nelson-assistant --desired-count 0 --region eu-central-1
+    - npm run dev
+    # when done:
+    - AWS_PROFILE=nelson aws ecs update-service --cluster NelsonAssistant-nelson-assistant --service NelsonAssistant-nelson-assistant --desired-count 1 --region eu-central-1
+
+commands:
+  typecheck: npm run typecheck
+  tests: npm test             # vitest
+  lint: npm run lint
+
+hot_reload: tsx watch auto-restarts on file save; .env changes require manual restart.

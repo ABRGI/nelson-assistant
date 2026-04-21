@@ -1,0 +1,36 @@
+# Tiny entry point. Read this first; load only the leaf nodes you need.
+# Leaves live under .claude/knowledge/. Each is self-contained and <100 lines.
+# Maintained alongside code changes; refreshed during releases, not at runtime.
+schema: 1
+repo: nelson-assistant
+purpose: >-
+  Slack-facing AI assistant for Nelson. Orchestrates Claude Agent SDK on
+  Amazon Bedrock. Per-conversation git worktrees on EFS. Calls Nelson APIs
+  on behalf of the asking Slack user (their own JWT, preserved RBAC).
+index:
+  - path: .claude/knowledge/stack.yaml
+    when: You need language / runtime / dep / entry-point info.
+  - path: .claude/knowledge/flow.yaml
+    when: You need to understand the request lifecycle (Slack event → reply).
+  - path: .claude/knowledge/agent-tools.yaml
+    when: You are adding, inspecting, or debugging an MCP tool.
+  - path: .claude/knowledge/storage.yaml
+    when: You need to know what lives where (S3, DynamoDB, Secrets Manager, EFS).
+  - path: .claude/knowledge/deploys.yaml
+    when: You are deploying, debugging ECS/ALB, or editing CDK.
+  - path: .claude/knowledge/slack.yaml
+    when: You are changing Slack scopes, events, slash commands, or the manifest.
+  - path: .claude/knowledge/dev-loop.yaml
+    when: You are running locally, iterating, or setting up socket mode.
+  - path: .claude/knowledge/conventions.yaml
+    when: Before making any code edit — TS strictness, validation, logging, error rules.
+  - path: .claude/knowledge/gotchas.yaml
+    when: You hit an unexpected error during boot, Slack handling, git, or EFS.
+  - path: .claude/knowledge/ecosystem.yaml
+    when: You need to know what other repos exist around Nelson and how they relate.
+  - path: .claude/knowledge/observability.yaml
+    when: User mentions logs / "what does CloudWatch say" / "is there an error trace" / "tail the logs". CloudWatch log group map + CLI recipes + tenant→log-group routing.
+  - path: .tasks/ROADMAP.md
+    when: You want the current running status of the project — shipped vs. todo.
+  - path: .tasks/HANDOVER.md
+    when: You want the latest session handover (deployed state, known gaps, commands).
