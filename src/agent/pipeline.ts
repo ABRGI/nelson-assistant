@@ -80,25 +80,33 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       return;
     }
 
+    // Create the progress message immediately on the data-query branch so the
+    // user sees motion during token refresh + worktree checkout (worktree is
+    // cold + slow on the first query after an ECS task restart — easily 60s).
+    const progress = await ThreadProgressMessage.create(
+      slack,
+      job.channel,
+      threadTs,
+      ':thinking_face: On it…',
+    );
+
     let tenant: ClientRecord;
     try {
       tenant = deps.resolveTenant();
     } catch (err) {
       await swapReaction(slack, job, 'x');
-      await slack.chat.postMessage({
-        channel: job.channel,
-        thread_ts: threadTs,
-        text: `:x: ${(err as Error).message}`,
-      });
+      await progress.finalize(`:x: ${(err as Error).message}`);
       return;
     }
 
+    progress.update(':key: Checking your Nelson session…');
     const tokenResult = await tokensSettled;
     if (!tokenResult.ok) {
       const err = tokenResult.err;
       if (err instanceof RefreshTokenInvalid) {
         logger.info({ slackUserId: job.userId }, 'refresh token rejected, prompting re-auth');
         await swapReaction(slack, job, 'question');
+        await progress.finalize('Your Nelson session expired.');
         await postSignInPrompt(
           deps,
           job.channel,
@@ -110,25 +118,16 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       }
       logger.warn({ err, slackUserId: job.userId }, 'token exchange failed');
       await swapReaction(slack, job, 'x');
-      await slack.chat.postMessage({
-        channel: job.channel,
-        thread_ts: threadTs,
-        text: `I couldn't refresh your Nelson session: ${(err as Error).message}`,
-      });
+      await progress.finalize(`I couldn't refresh your Nelson session: ${(err as Error).message}`);
       return;
     }
     const tokens = tokenResult.tokens;
 
-    const progress = await ThreadProgressMessage.create(
-      slack,
-      job.channel,
-      threadTs,
-      ':thinking_face: On it…',
-    );
-
     const question = renderHistoryForAgentPrompt(history, job.text);
 
+    progress.update(':package: Setting up your workspace…');
     const lease = await deps.worktrees.acquire(deps.defaultProject, deps.defaultBranch);
+    progress.update(':brain: Thinking through your question…');
     try {
       let lastToolName: string | undefined;
       let escalated = false;

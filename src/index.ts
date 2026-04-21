@@ -27,6 +27,11 @@ import { registerEvents } from './slack/events.js';
 import { makeHandler } from './agent/pipeline.js';
 import { HaikuClassifier } from './agent/classifier.js';
 
+const DEFAULT_PROJECT = 'nelson';
+// Knowledge graph lands on `develop` first; switch to 'master' once the team's
+// develop→master release flow has merged the graph files.
+const DEFAULT_BRANCH = 'develop';
+
 async function main(): Promise<void> {
   const config = await loadConfig();
   const { store, vault } = await buildStores(config);
@@ -46,6 +51,18 @@ async function main(): Promise<void> {
   const sshKeyPath = await writeSshKey(config.runtime.githubDeployKey);
   const worktrees = new WorktreePool(config.WORKSPACE_ROOT, buildRemotes(), 4, sshKeyPath);
   await worktrees.init();
+  // Warm the default project's worktree in the background so the first data
+  // query after a task restart doesn't pay the ~60s EFS + git-worktree-add
+  // cold-start cost.
+  void (async () => {
+    try {
+      const lease = await worktrees.acquire(DEFAULT_PROJECT, DEFAULT_BRANCH);
+      await lease.release();
+      logger.info({ project: DEFAULT_PROJECT, branch: DEFAULT_BRANCH }, 'worktree pool warmed');
+    } catch (err) {
+      logger.warn({ err }, 'worktree warmup failed; first query will be slow');
+    }
+  })();
 
   const classifier = new HaikuClassifier({
     haikuModelId: config.BEDROCK_HAIKU_MODEL_ID,
@@ -69,10 +86,8 @@ async function main(): Promise<void> {
     nonces,
     worktrees,
     classifier,
-    defaultProject: 'nelson',
-    // Knowledge graph lands on `develop` first; switch this to 'master' once
-    // the team's develop→master release flow has merged the graph files.
-    defaultBranch: 'develop',
+    defaultProject: DEFAULT_PROJECT,
+    defaultBranch: DEFAULT_BRANCH,
     sonnetModelId: config.BEDROCK_SONNET_MODEL_ID,
     ...(config.runtime.psqlReadOnlyUrl ? { psqlReadOnlyUrl: config.runtime.psqlReadOnlyUrl } : {}),
     escalationSlackUserId: config.ESCALATION_SLACK_USER_ID,
