@@ -70,6 +70,8 @@ async function main(): Promise<void> {
     worktrees,
     classifier,
     defaultProject: 'nelson',
+    // Knowledge graph lands on `develop` first; switch this to 'master' once
+    // the team's develop→master release flow has merged the graph files.
     defaultBranch: 'develop',
     sonnetModelId: config.BEDROCK_SONNET_MODEL_ID,
     ...(config.runtime.psqlReadOnlyUrl ? { psqlReadOnlyUrl: config.runtime.psqlReadOnlyUrl } : {}),
