@@ -48,6 +48,18 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       });
     logEvent('message_received', { source: job.source, text: job.text, userMessageTs: job.userMessageTs });
 
+    // Heuristic: if the user's current message looks like negative feedback on
+    // the bot's previous reply in this thread, log a user_feedback event.
+    // Phase D review sessions filter by these to find what went wrong.
+    if (job.source !== 'slash' && detectNegativeSentiment(job.text)) {
+      logEvent('user_feedback', {
+        source: 'heuristic',
+        sentiment: 'negative',
+        comment: job.text.slice(0, 300),
+      });
+      logger.info({ slackUserId: job.userId }, 'user feedback captured via negative-sentiment heuristic');
+    }
+
     const binding = await deps.bindings.get(job.userId);
     if (!binding) {
       await swapReaction(slack, job, 'question');
@@ -274,6 +286,21 @@ function describeToolActivity(toolName: string, input: unknown): string {
     return `:satellite_antenna: ${label} (${method} ${path})`;
   }
   return TOOL_LABELS[toolName] ?? ':hourglass_flowing_sand: Working on it…';
+}
+
+// Keep this list conservative — false positives spam the feedback queue. Only
+// match phrases where the user is clearly flagging a recent bot reply as wrong.
+const NEGATIVE_FEEDBACK_PATTERNS: RegExp[] = [
+  /\b(that'?s |this is |you'?re )?(wrong|incorrect|not (right|correct))\b/i,
+  /\b(doesn'?t look right|that'?s not it|nope that'?s)\b/i,
+  /\b(you (made|got) (that|it) up|you hallucinated|fabricated)\b/i,
+  /\bwhere did you get (that|this)\b.*\?/i,
+  /\b(that can'?t be right|doesn'?t match)\b/i,
+];
+
+function detectNegativeSentiment(text: string): boolean {
+  if (!text || text.length < 3) return false;
+  return NEGATIVE_FEEDBACK_PATTERNS.some((re) => re.test(text));
 }
 
 function looksLikeQuestion(text: string): boolean {

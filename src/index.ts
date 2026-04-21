@@ -111,6 +111,7 @@ async function main(): Promise<void> {
     bindings,
     nonces,
     enqueue,
+    chatlog,
     authCallbackBaseUrl: config.AUTH_CALLBACK_BASE_URL,
   });
 
@@ -122,7 +123,7 @@ async function main(): Promise<void> {
   } catch (err) {
     logger.warn({ err }, 'slack auth.test failed — mentions may not strip the bot user id');
   }
-  registerEvents(app, enqueue, selfUserId);
+  registerEvents(app, enqueue, selfUserId, chatlog);
 
   // /health and /ready are pre-registered in buildSlackApp (HTTP mode) or below (socket dev mode).
   if (config.runtime.slackAppToken && maybeExpress) {

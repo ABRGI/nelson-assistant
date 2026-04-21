@@ -2,12 +2,14 @@ import type { App, RespondFn, SlashCommand } from '@slack/bolt';
 import type { UserBindingStore } from '../auth/binding.js';
 import type { NonceStore } from '../auth/nonce.js';
 import type { JobEnqueuer } from '../queue/inproc.js';
+import type { ChatLog } from '../observability/chatlog.js';
 import { logger } from '../observability/logger.js';
 
 export interface CommandDeps {
   bindings: UserBindingStore;
   nonces: NonceStore;
   enqueue: JobEnqueuer;
+  chatlog: ChatLog;
   authCallbackBaseUrl: string;
 }
 
@@ -30,8 +32,34 @@ export function registerCommands(app: App, deps: CommandDeps): void {
         '*Nelson Assistant*',
         '`/nelson <question>` — ask Nelson anything. If you\'re not signed in yet, I\'ll reply with a one-time link to sign in once — after that you\'re good.',
         '`/nelson-auth` — (DM only) force a re-auth, e.g. if you want to switch Nelson users or your session has gone stale.',
+        '`/nelson-feedback <comment>` — flag a recent reply as wrong or unhelpful. Logged for a human review session.',
         'You can also DM the bot directly — no slash command needed.',
+        'Tip: react 👍 / 👎 on any of my replies to teach me which ones were good or bad.',
       ].join('\n'),
+    });
+  });
+
+  app.command('/nelson-feedback', async ({ ack, command, respond }) => {
+    await ack();
+    const comment = command.text.trim();
+    if (!comment) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Add a short note after `/nelson-feedback` about what went wrong. Example: `/nelson-feedback the price was off — I checked MUI and it said €85 not €70`.',
+      });
+      return;
+    }
+    deps.chatlog.append({
+      kind: 'user_feedback',
+      threadTs: command.channel_id,
+      channel: command.channel_id,
+      slackUserId: command.user_id,
+      detail: { source: 'slash_command', sentiment: 'negative', comment },
+    });
+    logger.info({ slackUserId: command.user_id, comment }, 'user feedback captured via slash command');
+    await respond({
+      response_type: 'ephemeral',
+      text: ':writing_hand: Got it — logged for review. Thanks for the signal.',
     });
   });
 }
