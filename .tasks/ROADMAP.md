@@ -16,9 +16,9 @@ Single source of truth for "what state is this project in, what's next, and what
 | Stage 1 — local smoke test | ✅ done (2026-04-21) | verified end-to-end from this GCP dev VM (socket mode) |
 | Stage 2 — CDK stacks (vpc, hosted-zone, peering, service) | ✅ done (2026-04-21) | 4 stacks in `infra/lib/`, deployed to `459045743560` eu-central-1 |
 | Production deploy | ✅ done (2026-04-21) | ECS Fargate + ALB at `assistant.nelson.management`; currently scaled to 0 while iterating locally |
-| Haiku pre-classifier | ⬜ next | skip worktree + full agent loop for conversational follow-ups — biggest remaining wart |
+| Haiku pre-classifier | ✅ done (2026-04-21) | data-query vs conversational; token-exchange runs in parallel; ephemeral prompt cache |
 | Thread state in S3 (`threads/<ts>.json`) | ⬜ todo | long threads lose context after bot restart |
-| Audit log (`audit/*.jsonl`) | ⬜ todo | Object Lock on state bucket already configured |
+| Chat-log + confidence + feedback + learning-session loop | ⬇ see next section | replaces plain "audit log"; 4-phase plan |
 | File uploads from Slack (`file_share` subtype) | ⬜ todo | download via bot token, save to worktree, pass path in prompt |
 | Deferred agent tools (`psql`, `download_report`, `playwright`) | ⬜ todo | unit-testable, no Slack needed |
 | `@mentions` in channels | ⬜ untested | handler wired; bot needs to be invited to a channel to verify |
@@ -30,6 +30,24 @@ Legend: ✅ done · ⏳ in progress · ⏸ blocked on external · ⬜ todo
 
 **Known API bugs (Nelson side, not this service)**:
 `/api/management/secure/reservations/arrivals` returns 500 (`hotel is null`); pagination on the main reservations search appears broken (agent told to use `totalCount` with `dateMode=EXACT`).
+
+---
+
+## Chat-log + confidence + feedback + learning loop (4-phase plan)
+
+Goal: every answer is traceable, scored, and correctable. Dissatisfied answers queue up for a Sandeep-led review session (here in Claude Code, not Slack) that fixes the knowledge graph or the code.
+
+**Phase A — chat log** (self-contained, ship first).
+Every pipeline event appended to S3: `chatlog/<yyyy-mm-dd>/<thread_ts>/<ts>-<eventId>.json`. Events: `message_received`, `classifier_verdict`, `api_call`, `tool_use`, `agent_reply`, `reaction_swap`, `escalation`, `error`. Object Lock on the `chatlog/` prefix. Non-blocking (errors logged and swallowed).
+
+**Phase B — confidence scoring**.
+After each data-query reply, a cheap Haiku scoring call returns a 1-10 confidence score plus optional hedging flags (uncertain about: occupancy defaults, hotel pick, field interpretation). Stored on the `agent_reply` chat-log event. Shown in Slack as a small italic footer when <7/10.
+
+**Phase C — feedback capture**.
+Three sources: (1) 👎 / 👍 reaction on the bot's reply → `user_feedback` event; (2) `/nelson-feedback <comment>` slash command → same event kind with `comment`; (3) heuristic: a user's next turn containing "wrong", "not right", "hmm no", etc. → auto-flag. All written to the chat log.
+
+**Phase D — learning-session mode**.
+Invoked as a Claude Code session (here, not Slack) via a new `/learning` skill. Pulls flagged sessions from S3, walks each (user ask → bot reply → where it went wrong), proposes knowledge-graph or code fixes, Sandeep reviews + merges. The fix flows back to prod through the normal commit → `/refresh` pipeline. The learning session itself must not happen over Slack.
 
 ---
 

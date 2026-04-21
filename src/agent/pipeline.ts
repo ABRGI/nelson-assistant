@@ -7,6 +7,7 @@ import type { NonceStore } from '../auth/nonce.js';
 import type { AskJob, JobHandler } from '../queue/inproc.js';
 import type { WorktreePool } from '../worktree/pool.js';
 import { logger } from '../observability/logger.js';
+import type { ChatLog } from '../observability/chatlog.js';
 import { ThreadProgressMessage } from '../slack/renderer.js';
 import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
 import type { HaikuClassifier } from './classifier.js';
@@ -20,6 +21,7 @@ export interface PipelineDeps {
   nonces: NonceStore;
   worktrees: WorktreePool;
   classifier: HaikuClassifier;
+  chatlog: ChatLog;
   defaultProject: string;
   defaultBranch: string;
   sonnetModelId: string;
@@ -33,6 +35,16 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
   return async (job: AskJob) => {
     const slack = deps.app.client;
     const threadTs = job.threadTs ?? (await postRoot(deps.app, job)).ts;
+    const logEvent = (kind: Parameters<ChatLog['append']>[0]['kind'], detail: Record<string, unknown>, tenantId?: string): void =>
+      deps.chatlog.append({
+        kind,
+        threadTs,
+        channel: job.channel,
+        slackUserId: job.userId,
+        ...(tenantId ? { tenantId } : {}),
+        detail,
+      });
+    logEvent('message_received', { source: job.source, text: job.text, userMessageTs: job.userMessageTs });
 
     const binding = await deps.bindings.get(job.userId);
     if (!binding) {
@@ -67,6 +79,9 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
     );
 
     const verdict = await deps.classifier.classify(job.text, history);
+    logEvent('classifier_verdict', verdict.type === 'conversational'
+      ? { type: 'conversational', reply: verdict.reply }
+      : { type: 'data_query', ...(verdict.reason ? { reason: verdict.reason } : {}) });
     if (verdict.type === 'conversational') {
       await tokensSettled;
       await slack.chat.postMessage({
@@ -76,6 +91,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         mrkdwn: true,
       });
       await swapReaction(slack, job, looksLikeQuestion(verdict.reply) ? 'question' : 'white_check_mark');
+      logEvent('agent_reply', { path: 'conversational', reply: verdict.reply });
       logger.info({ slackUserId: job.userId, reason: 'conversational' }, 'job completed (no agent run)');
       return;
     }
@@ -150,7 +166,11 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
               if (block.type === 'tool_use') {
                 lastToolName = block.name;
                 progress.update(describeToolActivity(block.name, block.input));
-                if (block.name === 'mcp__nelson__escalate_to_human') escalated = true;
+                logEvent('tool_use', { name: block.name, input: block.input }, tenant.tenantId);
+                if (block.name === 'mcp__nelson__escalate_to_human') {
+                  escalated = true;
+                  logEvent('escalation', { reason: 'agent_invoked_tool', input: block.input }, tenant.tenantId);
+                }
               }
             }
           }
@@ -160,6 +180,14 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       await progress.finalize(finalText);
       const needsInput = escalated || looksLikeQuestion(finalText);
       await swapReaction(slack, job, needsInput ? 'question' : 'white_check_mark');
+      logEvent('agent_reply', {
+        path: 'data_query',
+        reply: finalText,
+        lastToolName,
+        stopReason: result.stopReason,
+        sessionId: result.sessionId,
+        needsInput,
+      }, tenant.tenantId);
       logger.info(
         { tenantId: tenant.tenantId, project: deps.defaultProject, lastToolName, stopReason: result.stopReason },
         'job completed',
@@ -168,6 +196,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
     } catch (err) {
       logger.error({ err }, 'agent run failed');
       await swapReaction(slack, job, 'x');
+      logEvent('error', { stage: 'agent_run', message: (err as Error).message }, tenant.tenantId);
       await progress.finalize(
         `:x: Something went wrong and I couldn't complete your request.\n\`\`\`${(err as Error).message}\`\`\`\nPlease contact <@${deps.escalationSlackUserId}> for help.`,
       );

@@ -26,6 +26,7 @@ import { registerCommands } from './slack/commands.js';
 import { registerEvents } from './slack/events.js';
 import { makeHandler } from './agent/pipeline.js';
 import { HaikuClassifier } from './agent/classifier.js';
+import { ChatLog } from './observability/chatlog.js';
 
 const DEFAULT_PROJECT = 'nelson';
 // Knowledge graph lands on `develop` first; switch to 'master' once the team's
@@ -69,6 +70,8 @@ async function main(): Promise<void> {
     client: new BedrockRuntimeClient(awsClientConfig(config)),
   });
 
+  const chatlog = new ChatLog(store, true);
+
   const { app, startBolt, maybeExpress } = buildSlackApp(config);
 
   const queue = new InProcQueue(6, async (channel, threadTs, message) => {
@@ -86,6 +89,7 @@ async function main(): Promise<void> {
     nonces,
     worktrees,
     classifier,
+    chatlog,
     defaultProject: DEFAULT_PROJECT,
     defaultBranch: DEFAULT_BRANCH,
     sonnetModelId: config.BEDROCK_SONNET_MODEL_ID,
