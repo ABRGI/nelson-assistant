@@ -11,6 +11,7 @@ import type { ChatLog } from '../observability/chatlog.js';
 import { ThreadProgressMessage } from '../slack/renderer.js';
 import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
 import type { HaikuClassifier } from './classifier.js';
+import type { ConfidenceScorer } from './confidence.js';
 import { runAgent } from './runner.js';
 
 export interface PipelineDeps {
@@ -21,6 +22,7 @@ export interface PipelineDeps {
   nonces: NonceStore;
   worktrees: WorktreePool;
   classifier: HaikuClassifier;
+  confidence: ConfidenceScorer;
   chatlog: ChatLog;
   defaultProject: string;
   defaultBranch: string;
@@ -147,6 +149,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
     try {
       let lastToolName: string | undefined;
       let escalated = false;
+      const toolsUsed: string[] = [];
       const result = await runAgent({
         cwd: lease.dir,
         project: deps.defaultProject,
@@ -165,6 +168,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
             for (const block of event.message.content) {
               if (block.type === 'tool_use') {
                 lastToolName = block.name;
+                toolsUsed.push(describeToolForConfidence(block.name, block.input));
                 progress.update(describeToolActivity(block.name, block.input));
                 logEvent('tool_use', { name: block.name, input: block.input }, tenant.tenantId);
                 if (block.name === 'mcp__nelson__escalate_to_human') {
@@ -177,16 +181,30 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         },
       });
       const finalText = result.finalText?.trim() || 'Done.';
-      await progress.finalize(finalText);
+      // Score the grounding quality in parallel with reaction swap so it doesn't
+      // add latency to the visible reply. If score is low, append a footer on
+      // finalize; otherwise just log the score.
+      const confidencePromise = deps.confidence.score({
+        question: job.text,
+        reply: finalText,
+        toolsUsed,
+      });
       const needsInput = escalated || looksLikeQuestion(finalText);
       await swapReaction(slack, job, needsInput ? 'question' : 'white_check_mark');
+      const confidence = await confidencePromise;
+      const displayText = confidence.score < 7
+        ? `${finalText}\n\n_Confidence ${confidence.score}/10${confidence.hedges.length ? ': ' + confidence.hedges.join(', ') : ''}. Double-check this one._`
+        : finalText;
+      await progress.finalize(displayText);
       logEvent('agent_reply', {
         path: 'data_query',
         reply: finalText,
         lastToolName,
+        toolsUsed,
         stopReason: result.stopReason,
         sessionId: result.sessionId,
         needsInput,
+        confidence,
       }, tenant.tenantId);
       logger.info(
         { tenantId: tenant.tenantId, project: deps.defaultProject, lastToolName, stopReason: result.stopReason },
@@ -228,6 +246,23 @@ const NELSON_API_PATH_LABELS: Array<[RegExp, string]> = [
   [/\/reports/, 'Fetching a report'],
   [/\/config/, 'Reading configuration'],
 ];
+
+function describeToolForConfidence(toolName: string, input: unknown): string {
+  const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+  if (toolName === 'mcp__nelson__nelson_api') {
+    return `nelson_api ${String(i['method'] ?? 'GET')} ${String(i['path'] ?? '')}`;
+  }
+  if (toolName === 'Read' && typeof i['file_path'] === 'string') {
+    return `Read ${i['file_path']}`;
+  }
+  if (toolName === 'Grep' && typeof i['pattern'] === 'string') {
+    return `Grep ${i['pattern']}`;
+  }
+  if (toolName === 'Bash' && typeof i['command'] === 'string') {
+    return `Bash ${String(i['command']).slice(0, 100)}`;
+  }
+  return toolName;
+}
 
 function describeToolActivity(toolName: string, input: unknown): string {
   if (toolName === 'mcp__nelson__nelson_api') {

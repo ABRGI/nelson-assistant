@@ -26,6 +26,7 @@ import { registerCommands } from './slack/commands.js';
 import { registerEvents } from './slack/events.js';
 import { makeHandler } from './agent/pipeline.js';
 import { HaikuClassifier } from './agent/classifier.js';
+import { ConfidenceScorer } from './agent/confidence.js';
 import { ChatLog } from './observability/chatlog.js';
 
 const DEFAULT_PROJECT = 'nelson';
@@ -65,9 +66,14 @@ async function main(): Promise<void> {
     }
   })();
 
+  const bedrock = new BedrockRuntimeClient(awsClientConfig(config));
   const classifier = new HaikuClassifier({
     haikuModelId: config.BEDROCK_HAIKU_MODEL_ID,
-    client: new BedrockRuntimeClient(awsClientConfig(config)),
+    client: bedrock,
+  });
+  const confidence = new ConfidenceScorer({
+    haikuModelId: config.BEDROCK_HAIKU_MODEL_ID,
+    client: bedrock,
   });
 
   const chatlog = new ChatLog(store, true);
@@ -89,6 +95,7 @@ async function main(): Promise<void> {
     nonces,
     worktrees,
     classifier,
+    confidence,
     chatlog,
     defaultProject: DEFAULT_PROJECT,
     defaultBranch: DEFAULT_BRANCH,
