@@ -1,0 +1,27 @@
+{
+    "name": "nelson-assistant-infra",
+    "version": "1.0.0",
+    "private": true,
+    "scripts": {
+        "build": "tsc",
+        "diff": "cdk diff",
+        "synth": "cdk synth",
+        "deploy:vpc": "cdk deploy *NelsonAssistantVpc",
+        "deploy:peering": "cdk deploy *NelsonAssistantPeering",
+        "deploy:service": "cdk deploy *NelsonAssistantService",
+        "deploy:all": "cdk deploy --all"
+    },
+    "dependencies": {
+        "@aws-sdk/lib-dynamodb": "^3.1033.0",
+        "aws-cdk-lib": "^2.130.0",
+        "config": "^3.3.11",
+        "constructs": "^10.0.0"
+    },
+    "devDependencies": {
+        "@types/config": "^3.3.4",
+        "@types/node": "^22.5.0",
+        "aws-cdk": "^2.130.0",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.6.2"
+    }
+}

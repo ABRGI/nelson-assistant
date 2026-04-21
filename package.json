@@ -1,0 +1,43 @@
+{
+  "name": "nelson-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Slack-facing AI assistant for Nelson, powered by Claude Code Agent SDK on Bedrock.",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx watch src/index.ts",
+    "lint": "eslint \"src/**/*.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.633.0",
+    "@aws-sdk/client-dynamodb": "^3.1033.0",
+    "@aws-sdk/client-s3": "^3.633.0",
+    "@aws-sdk/client-secrets-manager": "^3.633.0",
+    "@aws-sdk/credential-providers": "^3.1031.0",
+    "@aws-sdk/lib-dynamodb": "^3.1033.0",
+    "@slack/bolt": "^3.21.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "p-limit": "^6.1.0",
+    "pg": "^8.13.0",
+    "pino": "^9.4.0",
+    "undici": "^6.19.8",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.5.0",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.1"
+  }
+}

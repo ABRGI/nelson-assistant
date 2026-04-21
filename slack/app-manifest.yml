@@ -1,0 +1,59 @@
+display_information:
+  name: Nelson Assistant
+  description: Claude-powered assistant for Nelson — answers in Slack on behalf of the asking user.
+  background_color: "#285557"
+  long_description: |
+    Nelson Assistant is a Claude-powered teammate that lives in Slack and answers questions about Nelson. Ask it anything from your workspace — hotel availability, reservation details, booking trends, configuration lookups — and it acts as you, not as a shared service account. The first time you use it, the bot DMs you a one-time sign-in link so you can link your personal Nelson login; every subsequent API call goes through your own Cognito token, so Nelson's existing RBAC applies exactly as it would in the Management UI.
+
+    Usage:
+    • /nelson <question> — ask Nelson anything, anywhere in Slack
+    • /nelson-auth — force a fresh sign-in link (to switch accounts or refresh an expired session)
+    • /nelson-help — command reference
+
+    Safety:
+    • Your Nelson password is never entered in Slack. The sign-in link opens a local page; only your refresh token is stored, encrypted in AWS Secrets Manager.
+    • Destructive or high-risk requests (deletes, payment changes, production writes) are escalated to a named admin instead of executed.
+    • Every tool call is auditable and scoped to your Nelson permissions.
+
+    Built on Claude Agent SDK + Amazon Bedrock. Maintained by the Nelson platform team.
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Nelson Assistant
+    always_online: true
+  slash_commands:
+    - command: /nelson
+      description: Ask Nelson anything. First use will DM you a sign-in link.
+      usage_hint: "[your question]"
+      should_escape: false
+    - command: /nelson-auth
+      description: Force a new Nelson sign-in link (DM only)
+      should_escape: false
+    - command: /nelson-help
+      description: Show Nelson Assistant help
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - chat:write.public
+      - commands
+      - im:history
+      - im:read
+      - im:write
+      - reactions:write
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: true
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false

@@ -1,0 +1,18 @@
+{
+    "environmentname": "NelsonAssistant",
+    "defaultremovalpolicy": "retain",
+    "awsregion": "eu-central-1",
+    "nelsonassistant": {
+        "hubcidr": "10.90.0.0/20",
+        "domain": "assistant.nelson.management",
+        "hostedzone": "nelson.management",
+        "escalationslackuserid": "U076B94QQHX",
+        "nelsonusermgmtbaseurl": "https://admin.nelson.management",
+        "defaulttenantid": "9b0703a5-48ae-46ef-9bf4-790c521e0586",
+        "sonnetmodelid": "eu.anthropic.claude-sonnet-4-6",
+        "cpu": "2048",
+        "memory": "8192",
+        "desiredcount": 1,
+        "clients": []
+    }
+}

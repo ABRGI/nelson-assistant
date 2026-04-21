@@ -1,0 +1,14 @@
+node_modules
+dist
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+coverage
+.vitest-cache
+.local-state
+tokens
+infra/cdk.out
+infra/cdk.context.json
+infra/node_modules
