@@ -179,6 +179,7 @@ export class NelsonAssistantServiceStack extends cdk.Stack {
                 NELSON_USER_MGMT_BASE_URL: config.get<string>('nelsonassistant.nelsonusermgmtbaseurl'),
                 DEFAULT_TENANT_ID: config.get<string>('nelsonassistant.defaulttenantid'),
                 BEDROCK_SONNET_MODEL_ID: config.get<string>('nelsonassistant.sonnetmodelid'),
+                BEDROCK_HAIKU_MODEL_ID: config.get<string>('nelsonassistant.haikumodelid'),
                 AUTH_CALLBACK_BASE_URL: `https://${config.get<string>('nelsonassistant.domain')}`,
             },
             // No ECS-level secret injection — the container fetches the full

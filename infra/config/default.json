@@ -10,6 +10,7 @@
         "nelsonusermgmtbaseurl": "https://admin.nelson.management",
         "defaulttenantid": "9b0703a5-48ae-46ef-9bf4-790c521e0586",
         "sonnetmodelid": "eu.anthropic.claude-sonnet-4-6",
+        "haikumodelid": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
         "cpu": "2048",
         "memory": "8192",
         "desiredcount": 1,
