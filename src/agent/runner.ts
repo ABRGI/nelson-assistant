@@ -216,6 +216,18 @@ async function loadSystemSeed(cwd: string, project: string, tenant: ClientRecord
       // try next
     }
   }
+  // Pre-inject the graph entry point + business-rules so Sonnet cannot answer
+  // Nelson-domain questions without seeing the facts in its context. The
+  // "mandatory opening sequence" prompt alone was routinely overridden — Sonnet
+  // decided it already knew and produced fabricated citations (learning-session
+  // thread 1776793595.543339, confidence 2/10). With the content in the system
+  // prompt, every rule/policy answer is grounded in text the model literally saw.
+  for (const rel of ['.claude/knowledge.yaml', '.claude/knowledge/business-rules.yaml']) {
+    try {
+      const content = await readFile(path.join(cwd, rel), 'utf-8');
+      parts.push(`--- ${rel} (pre-injected; source of truth for Nelson rules) ---`, content);
+    } catch { /* missing is fine; falls back to tool-use reads */ }
+  }
   return parts.join('\n\n');
 }
 
