@@ -193,18 +193,18 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         },
       });
       const finalText = result.finalText?.trim() || 'Done.';
-      // Score the grounding quality in parallel with reaction swap so it doesn't
-      // add latency to the visible reply. If score is low, append a footer on
-      // finalize; otherwise just log the score.
-      const confidencePromise = deps.confidence.score({
-        question: job.text,
-        reply: finalText,
-        toolsUsed,
-      });
+      // Skip confidence scoring entirely when the reply is a clarification
+      // question with no factual claims — the scorer penalises the absence of
+      // citations even though there's nothing to cite (learning-session thread
+      // 1776793631.337929 sub-reply 'tell me about prices', scored 2/10).
+      const isClarificationOnly = looksLikeClarificationOnly(finalText);
+      const confidencePromise = isClarificationOnly
+        ? Promise.resolve(null)
+        : deps.confidence.score({ question: job.text, reply: finalText, toolsUsed });
       const needsInput = escalated || looksLikeQuestion(finalText);
       await swapReaction(slack, job, needsInput ? 'question' : 'white_check_mark');
       const confidence = await confidencePromise;
-      const displayText = confidence.score < 7
+      const displayText = confidence && confidence.score < 7
         ? `${finalText}\n\n_Confidence ${confidence.score}/10${confidence.hedges.length ? ': ' + confidence.hedges.join(', ') : ''}. Double-check this one._`
         : finalText;
       await progress.finalize(displayText);
@@ -216,7 +216,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         stopReason: result.stopReason,
         sessionId: result.sessionId,
         needsInput,
-        confidence,
+        ...(confidence ? { confidence } : { confidence: null, confidenceSkippedReason: 'clarification_request_no_citations_needed' }),
       }, tenant.tenantId);
       logger.info(
         { tenantId: tenant.tenantId, project: deps.defaultProject, lastToolName, stopReason: result.stopReason },
@@ -301,6 +301,27 @@ const NEGATIVE_FEEDBACK_PATTERNS: RegExp[] = [
 function detectNegativeSentiment(text: string): boolean {
   if (!text || text.length < 3) return false;
   return NEGATIVE_FEEDBACK_PATTERNS.some((re) => re.test(text));
+}
+
+// A clarification-only reply has no factual claims to cite. The confidence
+// scorer would otherwise penalise its empty Source footer and surface a
+// misleading 2/10 warning to the user.
+const CLARIFICATION_PHRASES = [
+  /\bcould you (clarify|specify|tell me|share)\b/i,
+  /\bcan you (clarify|be more specific|tell me|share)\b/i,
+  /\bwhat (exactly )?(would you like|are you (asking|looking for)|did you mean)\b/i,
+  /\b(which|what)\s+(hotel|reservation|date|room|tenant|period|range)\b.*\?/i,
+  /\bplease (specify|clarify|share|provide|tell)\b/i,
+  /\bthe more specific you are\b/i,
+];
+
+function looksLikeClarificationOnly(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.includes('?')) return false;
+  // Has to be predominantly a question, not a buried clarifier after a factual answer.
+  // Heuristic: first 250 chars contain a clarification phrase.
+  const head = trimmed.slice(0, 250);
+  return CLARIFICATION_PHRASES.some((re) => re.test(head));
 }
 
 function looksLikeQuestion(text: string): boolean {
