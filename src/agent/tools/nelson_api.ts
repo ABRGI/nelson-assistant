@@ -62,6 +62,10 @@ export async function callNelsonApi(
       slackUserId: ctx.slackUserId,
       method: parsed.method,
       path: parsed.path,
+      // Log the query params so debug sessions can see EXACTLY what
+      // Sonnet sent — previous failures (wrong dateMode, missing
+      // totalCount, etc.) were invisible until we added this.
+      ...(parsed.query ? { query: parsed.query } : {}),
       status: res.statusCode,
       durationMs,
     },
