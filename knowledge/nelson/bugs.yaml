@@ -8,14 +8,17 @@ bugs:
     status: broken
     symptom: 500 Internal Server Error, message mentions "hotel is null"
     workaround: >-
-      Use GET /api/management/secure/reservations with dateMode=EXACT,
-      startDate=today, endDate=today, and the target hotelIds.
+      Use GET /api/management/secure/reservations with dateMode=ARRIVAL
+      (NOT dateMode=EXACT — EXACT silently returns 0 on general arrival
+      queries because it requires departure = endDate too). Set
+      startDate=endDate=target date, and hotelIds=csv. See
+      endpoints/reservations.yaml#dateMode_semantics for the full mapping.
     fallback_sql: |
-      SELECT r.uuid, r.code, r.start_date, r.end_date, r.adults, r.children, r.state
-        FROM reservation r
+      SELECT r.uuid, r.reservation_code, r.check_in, r.check_out, r.state, r.booking_channel
+        FROM nelson.reservation r
        WHERE r.hotel_id = ANY($1::bigint[])
-         AND r.start_date = CURRENT_DATE
-         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE');
+         AND DATE(r.check_in) = $2::date
+         AND r.state = 'CONFIRMED';
 
   - endpoint: GET /api/prices/{hotelId}/...
     status: path-param gotcha (not really a bug — a naming mismatch in docs)
@@ -41,7 +44,9 @@ bugs:
     symptom: Page cursor sometimes drops or duplicates results.
     workaround: >-
       Use ?totalCount=true to get a count first. For listings, prefer narrow
-      date windows + dateMode=EXACT over server-side paging.
+      date windows + the appropriate dateMode (ARRIVAL/DEPARTURE/STAY —
+      see endpoints/reservations.yaml#dateMode_semantics) over server-side
+      paging. Do NOT default to EXACT.
 
   - endpoint: /api/management/secure/secif_pricings/{hotelId}/...
     status: caveat

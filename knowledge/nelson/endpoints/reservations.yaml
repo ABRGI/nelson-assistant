@@ -56,11 +56,54 @@ staff_search_and_fetch:
     query:
       - hotelIds: csv of numeric hotel ids
       - startDate, endDate: YYYY-MM-DD
-      - dateMode: EXACT | ARRIVAL | DEPARTURE | STAY | CREATED
-      - state: CONFIRMED | CANCELLED | BLOCKED | INITIAL | PENDING_CONFIRMATION | CHECK_IN_INCOMPLETE
+      - dateMode: EXACT | ARRIVAL | DEPARTURE | STAY | CREATED (see dateMode_semantics below — HARD to get right)
+      - state: CONFIRMED | CANCELLED | BLOCKED | INITIAL | PENDING_CONFIRMATION (NOT CHECK_IN_INCOMPLETE — that's not in the DB)
       - channel: NELSON | BOOKINGCOM | EXPEDIA | MOBILEAPP | LEGACY
       - totalCount: true (recommended — pagination cursor is flaky)
       - code, uuid, guestName, customerEmail
+
+dateMode_semantics:
+  # CRITICAL: picking the wrong dateMode silently returns the wrong count.
+  # Sonnet picked EXACT for "arrivals today" on thread 1776898154 and got 0
+  # when the right answer (via dateMode=ARRIVAL) was 55. If you remember
+  # nothing else about this endpoint, remember this mapping:
+  ARRIVAL:
+    meaning: check_in (arrival_date) is within [startDate, endDate]
+    use_for: ["arrivals today", "who is arriving on X", "check-ins on date Y", "guests checking in"]
+    db_equivalent: DATE(check_in) BETWEEN startDate AND endDate
+  DEPARTURE:
+    meaning: check_out (departure_date) is within [startDate, endDate]
+    use_for: ["departures today", "checkouts on X", "guests leaving on Y"]
+    db_equivalent: DATE(check_out) BETWEEN startDate AND endDate
+  STAY:
+    meaning: reservation overlaps the range (arrival <= endDate AND departure > startDate)
+    use_for: ["staying tonight", "in-house on X", "guests during Y", "occupancy for the range"]
+    db_equivalent: DATE(check_in) <= endDate AND DATE(check_out) > startDate
+  CREATED:
+    meaning: the booking itself was created/confirmed in the date range
+    use_for: ["bookings made today", "reservations created this week", "new bookings"]
+    db_equivalent: DATE(confirmed) BETWEEN startDate AND endDate   # confirmed timestamp as the creation marker
+  EXACT:
+    meaning: reservation's dates EXACTLY match the single-date range (startDate = endDate = check_in)
+    use_for: ["reservation on exactly that night" — NARROW, almost never what a user means]
+    DO_NOT_USE_FOR: ["arrivals" / "check-ins" / "today's bookings" / general-volume questions]
+    db_equivalent: DATE(check_in) = startDate AND DATE(check_out) = endDate + 1 day
+    warning: Using EXACT for general arrival/volume questions returns 0 because most reservations span multiple nights and don't have departure on the start date. This is the most common wrong choice Sonnet makes.
+  rule_of_thumb: |
+    User said               → dateMode
+    "arrivals"              → ARRIVAL
+    "departures"            → DEPARTURE
+    "staying" / "in-house"  → STAY
+    "booked on"             → CREATED
+    "reservations for day X"→ ARRIVAL (they almost always mean arriving)
+
+dateMode_pick_procedure:
+  - Parse the user's phrasing. If it mentions "arrival/arriving/check-in" → ARRIVAL.
+  - If it mentions "departure/checkout/leaving" → DEPARTURE.
+  - If it mentions "staying/occupancy/in-house/tonight's guests" → STAY.
+  - If it mentions "booked/created/new bookings" → CREATED.
+  - Otherwise, ASK the user which cut they want (see output-format.yaml — prefer showing all 3 cuts in the default breakdown). Do NOT default to EXACT.
+  - If the first API call returns 0 rows, IMMEDIATELY try the alternate dateMode values (ARRIVAL → STAY → CREATED) before concluding "no reservations exist". Finding 0 with EXACT is the symptom of the wrong mode, not actual empty data.
   count:
     method: GET
     path: /api/management/secure/reservations-count
@@ -73,7 +116,7 @@ staff_search_and_fetch:
   arrivals_broken:
     method: GET
     path: /api/management/secure/reservations/arrivals
-    status: BROKEN — returns 500. Use search with dateMode=EXACT instead. See bugs.yaml.
+    status: BROKEN — returns 500. Use search with dateMode=ARRIVAL (NOT dateMode=EXACT) instead. See bugs.yaml + dateMode_semantics above.
 
 staff_update:
   update:
