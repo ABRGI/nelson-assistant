@@ -10,6 +10,8 @@ import { callNelsonApi, NelsonApiInputSchema } from './tools/nelson_api.js';
 import { escalateToHuman, EscalateInputSchema } from './tools/escalate.js';
 import { gitLog, GitLogInputSchema } from './tools/git_log.js';
 import { runDeepResearch, DeepResearchInputSchema } from './tools/deep_research.js';
+import { runPsql, PsqlInputSchema } from './tools/psql.js';
+import type { Pool as PgPool } from 'pg';
 import type { WorktreePool } from '../worktree/pool.js';
 
 export interface RunAgentArgs {
@@ -25,6 +27,7 @@ export interface RunAgentArgs {
   escalationSlackUserId: string;
   sonnetModelId: string;
   psqlReadOnlyUrl?: string;
+  psqlPool?: PgPool;                    // shared node-pg pool — required when psqlReadOnlyUrl is set
   knowledgeInjection?: string;          // pre-picked knowledge leaves rendered as one block
   worktrees: WorktreePool;              // needed for deep_research (it acquires on demand)
   defaultBranch: string;
@@ -88,7 +91,6 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
     // psql stays (observer role, SELECT-only) and aws logs stay (read-only
     // ECS log tailing for live diagnosis). Git log is exposed via MCP, not Bash.
     allowedTools: [
-      'Bash(psql:*)',
       'Bash(aws logs describe-log-groups:*)',
       'Bash(aws logs describe-log-streams:*)',
       'Bash(aws logs tail:*)',
@@ -101,6 +103,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
       'mcp__nelson__git_log',
       'mcp__nelson__escalate_to_human',
       'mcp__nelson__deep_research',
+      'mcp__nelson__psql',
     ],
     mcpServers: {
       nelson: createSdkMcpServer({
@@ -174,6 +177,22 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
               return { content: [{ type: 'text', text: res.summary }] };
             },
           ),
+          ...(args.psqlPool && args.psqlReadOnlyUrl ? [
+            tool(
+              'psql',
+              'Run a READ-ONLY SQL query against the Nelson observer database (PostgreSQL, multi-tenant schemas). Use this for authoritative lookups that the HTTP API cannot serve — e.g. looking up a reservation by its 9-digit code, verifying FK integrity when the API returns 500s, pulling DISTINCT values. SELECT / WITH / EXPLAIN / SHOW only — any INSERT/UPDATE/DELETE/DDL is rejected. Default 100 rows, max 500. Prod Omena data lives under the `nelson` schema (nelson.reservation, nelson.hotel, nelson.line_item, nelson.invoice). NEVER `SELECT *` on nelson.reservation / nelson.line_item / nelson.audit_log — always WHERE-filter by PK, code, or a narrow date range.',
+              PsqlInputSchema.shape,
+              async (input) => {
+                const poolRef = args.psqlPool;
+                const urlRef = args.psqlReadOnlyUrl;
+                if (!poolRef || !urlRef) {
+                  return { content: [{ type: 'text', text: 'psql: tool is not configured in this environment (PSQL_READ_ONLY_URL unset).' }] };
+                }
+                const res = await runPsql({ pool: poolRef, connectionString: urlRef }, input);
+                return { content: [{ type: 'text', text: JSON.stringify(res) }] };
+              },
+            ),
+          ] : []),
         ],
       }),
     },
@@ -243,10 +262,27 @@ async function loadSystemSeed(project: string, tenant: ClientRecord, psqlReadOnl
     `Clarify before answering (HARD RULE — USE SPARINGLY): ask ONE short clarifying question ONLY when the ambiguity is NOT resolvable by showing a breakdown and WOULD materially change the answer (e.g. unknown hotel scope when the roster has 10 hotels, or "last quarter" = calendar Q1 vs rolling 90 days). Do NOT clarify for dimensions that the default-breakdown rule already handles (reservation-vs-arrival-vs-stay, per-channel, per-room-type). Do NOT re-ask a clarification that was already asked and answered earlier in this same thread — carry the answer forward. Clarifying ≠ escalating — DO NOT call escalate_to_human for read-side ambiguity. Only use escalate_to_human for destructive actions a human must perform.`,
     `Read-only authority: You must NEVER call non-GET HTTP methods on Nelson APIs, NEVER write to the DB, NEVER edit source code, NEVER send emails/SMS to guests, NEVER rotate credentials or door codes. Destructive actions go through mcp__nelson__escalate_to_human first — no dry runs, no "let me just check".`,
     `Retry budget: Max 3 unsuccessful API attempts per question (4xx/5xx or empty/wrong-shape 2xx). After that: switch to psql if the knowledge leaves list an SQL path; swap hotel identifier (label↔id) if the call took a hotel segment; otherwise escalate. Never prefix-loop, never retry a 405 with the same method.`,
-    `Format answers for Slack mrkdwn: *bold*, bullet lists with •, \`code\`. No Markdown tables (| col |) — Slack does not render them.`,
+    `Reservation identifier routing (HARD RULE): when the user pastes a reservation identifier, route by SHAPE before calling anything — the DB (via mcp__nelson__psql) is faster and authoritative:\n- 36-char UUID (8-4-4-4-12 hyphen pattern) → GET /api/management/secure/reservations/{uuid} first, psql fallback.\n- EXACTLY 9 digits → mcp__nelson__psql with \`SELECT id, uuid, reservation_code, booking_channel, booking_channel_reservation_id, state FROM nelson.reservation WHERE reservation_code = '<code>'\` FIRST (do NOT hit the API blindly — /reservations?code= is fuzzy and can miss). Then use the returned uuid for API follow-ups (payments, invoices, etc.).\n- EXACTLY 10 digits → mcp__nelson__psql with \`SELECT id, uuid, reservation_code, booking_channel, booking_channel_reservation_id FROM nelson.reservation WHERE booking_channel_reservation_id = '<n>'\` (Booking.com / Expedia OTA reference), then use the returned uuid.\n- Otherwise → API search with code/guestName/customerEmail; psql LIKE as fallback.\nSee knowledge/nelson/endpoints/reservations.yaml → identifiers + how_to_route_a_user_supplied_identifier for details. NEVER conclude "reservation does not exist" from a single API 404/500 — verify by shape against the DB first.`,
+    `Slack mrkdwn rendering — HARD rules. Replies go straight into Slack; Slack does NOT speak standard Markdown. What breaks if you use GitHub/CommonMark:
+    • *single asterisks* = bold. **double asterisks** renders as literal "**". Use *one* asterisk.
+    • _underscores_ = italic.
+    • ~tilde~ = strikethrough.
+    • \`backticks\` = inline code. Triple backticks \`\`\` for code blocks.
+    • > at start of a line = blockquote.
+    • Bullet lines start with • (U+2022), - or * work too. Numbered lists: "1. ".
+    • LINKS: <https://example.com|label> (Slack syntax). Plain Markdown [label](url) does NOT render.
+    • NO Markdown TABLES (| col | col |). Slack shows the pipes literally. For tabular data use either:
+        (a) bullets: "• *Row name*: col1 val • col2 val"
+        (b) aligned columns with spaces inside a code block.
+    • Keep headings as *bold* lines, not # or ##.
+    • Emoji names work: :white_check_mark: :warning: :wrench: :microscope: etc.
+    Every reply MUST follow these or Slack will show garbled text. If you're about to write a pipe table or double-asterisk bold, stop and rewrite.`,
     `Keep replies under 3500 characters (Slack's hard limit forces ugly chunking above ~4000). If the data is long (e.g. >20 reservations or >20 rooms), DO NOT list every row — summarise by the relevant dimensions (per hotel, per channel, per room-type, per state) with counts, then offer: "want me to list specific ones? tell me which slice.". Quote individual rows only when the user explicitly asked for them. Running totals + distribution beats a verbatim dump every time.`,
     ...(psqlReadOnlyUrl
-      ? [`A read-only PostgreSQL observer connection is available at PSQL_READ_ONLY_URL. Use \`psql "$PSQL_READ_ONLY_URL" -c "..."\` for direct DB queries when the API cannot serve the data. SELECT only.`]
+      ? [
+          `Direct DB access: the \`mcp__nelson__psql\` tool gives you a read-only SELECT on the Nelson observer database. Prefer it over the HTTP API when you need authoritative lookups the API cannot serve — especially: looking up a reservation by its 9-digit code, verifying state when the API returns 500s with null-pointer errors, pulling DISTINCT values, checking integrity. SELECT / WITH / EXPLAIN / SHOW only — write statements are rejected at the tool layer. Prod Omena data lives under the \`nelson\` schema (\`nelson.reservation\`, \`nelson.hotel\`, \`nelson.line_item\`, \`nelson.invoice\`, etc.). NEVER \`SELECT *\` on \`nelson.reservation\`, \`nelson.line_item\`, \`nelson.audit_log\` or any insert-hot table — always filter by PK, code, or a narrow range.`,
+          `API → DB fallback (HARD RULE): whenever the Nelson HTTP API returns 500 / 4xx with a descriptive error ("hotel is null", "reservation is null", "NullPointerException", etc.) AND the user's question is about a specific reservation / invoice / hotel / member, call \`mcp__nelson__psql\` with a targeted SELECT to verify actual DB state BEFORE drawing conclusions. A controller-level NullPointerException usually means a missing FK or a join condition failure, NOT row corruption — only the DB can tell you which. Run the SELECT, state the actual row values, and cite the query in the Source footer. Do NOT conclude "data corruption" or "needs DBA investigation" without DB evidence.`,
+        ]
       : []),
     `CloudWatch Logs (task role is read-only on /ecs/* and /aws/codebuild/*): \`aws logs tail <group> --since <N>m --region eu-central-1\` + filter-log-events / get-log-events / start-query / get-query-results. Use for live-issue diagnosis; cite the exact group + filter + --since value in the Source footer.`,
   ];

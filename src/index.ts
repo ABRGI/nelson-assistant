@@ -31,6 +31,7 @@ import { ChatLog } from './observability/chatlog.js';
 import { loadKnowledgeBundle } from './knowledge/loader.js';
 import { loadTenantHotelsFromBundle } from './knowledge/tenant-hotels.js';
 import { LeafPicker } from './knowledge/picker.js';
+import { buildPsqlPool } from './agent/tools/psql.js';
 
 const DEFAULT_PROJECT = 'nelson';
 // Knowledge graph lands on `develop` first; switch to 'master' once the team's
@@ -67,6 +68,11 @@ async function main(): Promise<void> {
     { count: tenantHotels.hotels.length, ambiguousCities: tenantHotels.ambiguousCities },
     'tenant hotel roster loaded',
   );
+
+  const psqlPool = config.runtime.psqlReadOnlyUrl
+    ? buildPsqlPool(config.runtime.psqlReadOnlyUrl)
+    : undefined;
+  if (psqlPool) logger.info('psql observer pool initialised');
 
   const bedrock = new BedrockRuntimeClient(awsClientConfig(config));
   const classifier = new HaikuClassifier({
@@ -112,6 +118,7 @@ async function main(): Promise<void> {
     defaultBranch: DEFAULT_BRANCH,
     sonnetModelId: config.BEDROCK_SONNET_MODEL_ID,
     ...(config.runtime.psqlReadOnlyUrl ? { psqlReadOnlyUrl: config.runtime.psqlReadOnlyUrl } : {}),
+    ...(psqlPool ? { psqlPool } : {}),
     escalationSlackUserId: config.ESCALATION_SLACK_USER_ID,
     authCallbackBaseUrl: config.AUTH_CALLBACK_BASE_URL,
     resolveTenant,

@@ -4,8 +4,50 @@ purpose: Search, fetch, update, cancel, and email reservations.
 related: [.claude/knowledge/tasks.yaml, .claude/knowledge/enums.yaml, .claude/knowledge/bugs.yaml]
 
 identifiers:
-  uuid: varchar(36) — external PK used in most URLs
-  code: short human-visible booking reference — used in activity log endpoints
+  # DB-verified formats (scripts/reservation-formats.js, 2026-04-22). Use the
+  # shape of the literal the user pasted to decide DB vs API up front.
+  uuid:
+    format: 36-char UUID (8-4-4-4-12 hex)
+    db_column: nelson.reservation.uuid (varchar 50)
+    always_set_for: every reservation on every channel
+  reservation_code:
+    format: exactly 9 digits (e.g. `717463067`, `426840568`)
+    db_column: nelson.reservation.reservation_code (varchar 20)
+    always_set_for: every reservation on every channel (NELSON, BOOKINGCOM, EXPEDIA, MOBILEAPP)
+    note: Nelson's own booking reference — NOT the OTA's reference.
+  booking_channel_reservation_id:
+    format: exactly 10 digits (Booking.com AND Expedia)
+    db_column: nelson.reservation.booking_channel_reservation_id (varchar 50)
+    set_for_channels: [BOOKINGCOM, EXPEDIA]
+    null_for_channels: [NELSON, MOBILEAPP, LEGACY]
+    note: The OTA's own reference (guest sees this in their OTA account).
+  internal_id:
+    format: bigint (int8) — auto-increment PK
+    db_column: nelson.reservation.id
+    used_when: internal cross-table joins only; users never see this.
+
+how_to_route_a_user_supplied_identifier:
+  # When the user pastes an identifier and asks to look up a reservation, map
+  # to the right lookup path by SHAPE before calling the API. DB lookups are
+  # faster and authoritative; the API's /reservations?code= search is fuzzy.
+  - shape: 36-char UUID (8-4-4-4-12 hyphen pattern)
+    first_lookup: GET /api/management/secure/reservations/{uuid}
+    fallback: psql -c "SELECT * FROM nelson.reservation WHERE uuid = '{uuid}'"
+  - shape: exactly 9 digits
+    first_lookup: psql -c "SELECT id, uuid, reservation_code, booking_channel, booking_channel_reservation_id, state FROM nelson.reservation WHERE reservation_code = '{code}'"
+    then: take the returned uuid and use it in /api/management/secure/reservations/{uuid}, payments, invoices, etc.
+    why_db_first: The API's /reservations?code= search is fuzzy and sometimes misses exact matches; the DB row is authoritative.
+  - shape: exactly 10 digits (likely Booking.com / Expedia OTA confirmation number)
+    first_lookup: psql -c "SELECT id, uuid, reservation_code, booking_channel, booking_channel_reservation_id FROM nelson.reservation WHERE booking_channel_reservation_id = '{n}'"
+    then: take the returned uuid and continue via the API.
+  - shape: other digits / alpha / unclear
+    first_lookup: API search /api/management/secure/reservations?code=... OR ?guestName= + ?customerEmail=
+    fallback: psql with LIKE on reservation_code or a join on customer fields.
+
+never_do_this:
+  - Conclude "reservation does not exist" from a single API 404/500 on /reservations/{id} — the identifier shape may not match the endpoint. Fall back to the DB by shape before making that conclusion.
+  - Paste a 9-digit reservation_code into a path expecting uuid — it will 404 on UUID path-param validation.
+  - Use booking_channel_reservation_id in paths that expect Nelson's reservation_code or uuid — those endpoints accept only the internal identifiers.
 
 staff_search_and_fetch:
   search:

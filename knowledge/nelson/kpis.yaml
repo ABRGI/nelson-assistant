@@ -1,7 +1,8 @@
 schema: 1
 node: kpis
-purpose: Definitions + canonical SQL for the hotel KPIs that come up constantly — ADR, RevPAR, Occupancy, Revenue, New Sales, Growth, YoY.
-related: [.claude/knowledge/tasks.yaml, .claude/knowledge/db/schema.yaml, .claude/knowledge/db/queries.yaml]
+purpose: Definitions + canonical SQL for the hotel KPIs — ADR, RevPAR, Occupancy, Revenue, New Sales, Growth, YoY, OTB (on the books), pace comparison. Includes the authoritative otb_at_snapshot SQL.
+when_to_load: Any question about revenue, ADR, RevPAR, occupancy, usages, room nights, OTB, on-the-books, pace, YoY, forecast, sales-forecast-daily, "same time last year", "as of now vs last year", growth %, new sales, or any request to compare a metric across time.
+related: [.claude/knowledge/tasks.yaml, .claude/knowledge/db/schema.yaml, .claude/knowledge/db/queries.yaml, .claude/knowledge/endpoints/reports.yaml]
 
 authority: >-
   These definitions match Nelson's own revenue report SQL in
@@ -12,13 +13,23 @@ authority: >-
 core_formula_facts:
   revenue_source: line_item table (NOT reservation_product)
   date_field: line_item.invoice_date (night the revenue is attributed to)
-  net_helper: net_price(price, vat_percentage) — PostgreSQL function available to the observer role; returns price excluding VAT
-  product_filter: p.type IN ('ACCOMMODATION','EXTRA_BED')
+  net_helper:
+    function: nelson.net_price(price, vat_percentage)
+    note: Schema-qualify with `nelson.` when calling via the observer connection — `net_price(...)` without a schema errors with "function does not exist" because search_path doesn't include `nelson` for observer_user.
+    returns: price excluding VAT
+  product_filter_for_revenue: p.type IN ('ACCOMMODATION','EXTRA_BED')    # revenue sums both
+  product_filter_for_room_nights: p.type = 'ACCOMMODATION'               # RN counts ACCOMMODATION ONLY — NEVER include EXTRA_BED
   state_filter: >-
     li.confirmed IS NOT NULL
     AND ((li.cancelled IS NULL AND li.to_be_cancelled IS NULL) OR li.refundable IS FALSE)
   hotel_filter: h.available = true   # report scope is available hotels only
   vat_default: excluded. Nelson's "ADR (excl VAT)", "Revenue" etc. are all net figures.
+  critical_gotcha: |
+    Revenue and Room Nights have DIFFERENT product filters.
+    - Revenue: ACCOMMODATION + EXTRA_BED (extra-bed revenue counts toward total).
+    - Room Nights: ACCOMMODATION only (each extra bed is its own line_item row but NOT a separate room).
+    Using `p.type IN ('ACCOMMODATION','EXTRA_BED')` for RN will inflate the count by the number of extra beds — the revenue will still look right (extra-bed price is small) which makes this bug sneaky.
+    CONFIRMED against DB + Sales Forecast Daily report 2026-04-22.
 
 yoy_convention:
   nelson_definition: "last year" = 364 days back (invoice_date::date - 364). This is DoW-aligned, not calendar -1 year.
@@ -41,7 +52,7 @@ kpis:
 
   usages_or_room_nights_sold:
     name: Usages (room nights sold)
-    formula: count of qualifying line_item rows (each is one night of ACCOMMODATION or EXTRA_BED).
+    formula: COUNT(li.*) WHERE p.type = 'ACCOMMODATION' (ACCOMMODATION ONLY — do NOT include EXTRA_BED; see core_formula_facts.critical_gotcha).
 
   room_nights_available:
     name: Room nights available
@@ -83,14 +94,18 @@ canonical_sql:
     params: [d (date)]
     description: Per-hotel revenue, usages, ADR, RevPAR, occupancy for one night, with YoY comparison to the same weekday last year.
     sql: |
+      -- Revenue sums ACCOMMODATION + EXTRA_BED; Room Nights (usages) counts
+      -- ACCOMMODATION ONLY. Running these in one CTE requires per-metric
+      -- filtering.
       WITH rev AS (
         SELECT r.hotel_id,
                (CASE WHEN li.invoice_date = $1::date THEN 1 ELSE 2 END) AS period,
-               SUM(net_price(li.price, li.vat_percentage)) AS net,
-               count(*) AS usages
-          FROM line_item li
-          JOIN reservation r ON r.id = li.reservation_id
-          JOIN product p     ON p.id = li.product_id
+               SUM(nelson.net_price(li.price, li.vat_percentage))
+                 FILTER (WHERE p.type IN ('ACCOMMODATION','EXTRA_BED'))     AS net,
+               COUNT(*) FILTER (WHERE p.type = 'ACCOMMODATION')             AS usages
+          FROM nelson.line_item li
+          JOIN nelson.reservation r ON r.id = li.reservation_id
+          JOIN nelson.product p     ON p.id = li.product_id
          WHERE (li.invoice_date = $1::date OR li.invoice_date = ($1::date - 364))
            AND li.confirmed IS NOT NULL
            AND ((li.cancelled IS NULL AND li.to_be_cancelled IS NULL) OR li.refundable IS FALSE)
@@ -99,7 +114,7 @@ canonical_sql:
       ),
       rooms AS (
         SELECT hotel_id, count(*) AS room_nights
-          FROM room
+          FROM nelson.room
          WHERE available = true
          GROUP BY hotel_id
       )
@@ -115,7 +130,7 @@ canonical_sql:
              (r2.net / NULLIF(rm.room_nights,0))  AS revpar_last,
              (r2.usages::numeric / NULLIF(rm.room_nights,0) * 100) AS occupancy_last,
              ((r1.net - r2.net) / NULLIF(r2.net,0) * 100)          AS revenue_growth_pct
-        FROM hotel h
+        FROM nelson.hotel h
         LEFT JOIN rev  r1 ON r1.hotel_id = h.id AND r1.period = 1
         LEFT JOIN rev  r2 ON r2.hotel_id = h.id AND r2.period = 2
         LEFT JOIN rooms rm ON rm.hotel_id = h.id
@@ -126,6 +141,47 @@ canonical_sql:
     params: [start_date, end_date]
     description: Same shape as the Revenue XLSX report in the MUI. Per hotel + total row.
     sql_reference: nelson-web/src/main/java/nelson/report/ReportService.java REVENUE_REPORT (the ":nights" variable is end_date - start_date + 1).
+
+  otb_at_snapshot:
+    # Pace OTB: "what was on the books FOR stay_date AS OF snapshot_date".
+    # Use this for "OTB same time last year" / "OTB as of X" questions.
+    # Validated 2026-04-22 against Sales Forecast Daily report:
+    #   HKI2, stay=2025-05-06, snapshot=2025-04-23 → 62 RN / €4,112.90
+    #   (Report: 63 RN / €4,188.69 — off by 1 RN / ~€76, likely cancel-timestamp edge case.)
+    params: [hotel_id, stay_date, snapshot_date]
+    sql: |
+      -- Accommodation-only for Room Nights, ACCOMMODATION+EXTRA_BED for revenue,
+      -- confirmed as of snapshot, still valid as of snapshot (not yet cancelled).
+      SELECT COUNT(*) FILTER (WHERE p.type = 'ACCOMMODATION')                                    AS room_nights,
+             SUM(nelson.net_price(li.price, li.vat_percentage))
+               FILTER (WHERE p.type IN ('ACCOMMODATION','EXTRA_BED'))                             AS net_revenue
+        FROM nelson.line_item li
+        JOIN nelson.reservation r ON r.id = li.reservation_id
+        JOIN nelson.product p     ON p.id = li.product_id
+       WHERE r.hotel_id = $1
+         AND li.invoice_date = $2::date
+         AND li.confirmed IS NOT NULL
+         AND li.confirmed <= ($3::date + INTERVAL '1 day' - INTERVAL '1 second')
+         AND (
+           (li.cancelled IS NULL AND li.to_be_cancelled IS NULL)
+           OR li.refundable IS FALSE
+           OR (li.cancelled IS NOT NULL AND li.cancelled > ($3::date + INTERVAL '1 day'))
+           OR (li.to_be_cancelled IS NOT NULL AND li.to_be_cancelled > ($3::date + INTERVAL '1 day'))
+         );
+    how_to_use_for_yoy_otb:
+      - this_year_stay_date  = user's stay date (e.g. 2026-05-05)
+      - this_year_snapshot   = today (snapshot = now)
+      - last_year_stay_date  = this_year_stay_date - 364 days, DoW-aligned
+      - last_year_snapshot   = today - 364 days
+      - run the query twice, once per (stay_date, snapshot_date) pair.
+    pace_comparison_presentation: |
+      For "OTB as of now vs same time last year":
+        This year (YYYY-MM-DD this, OTB as of today):       <rn> rooms · €<net>
+        Last year (YYYY-MM-DD -364d, OTB as of today -364d): <rn> rooms · €<net>
+        Pace change: <Δrn> rooms (<Δ%>) · €<Δnet> (<Δ%>)
+      If the user also asks about "last year actual" (final pickup), run the
+      canonical revenue_and_adr_for_single_date query without the snapshot
+      filter and present as a separate line — do NOT mix the two.
 
 how_to_answer_a_kpi_question_end_to_end:
   step_1_pick_source:
@@ -156,6 +212,44 @@ how_to_answer_a_kpi_question_end_to_end:
 
       _Assumed: Nelson's default YoY convention (−364 days, DoW-aligned). Say "calendar year" if you want 2025-04-11 instead._
       _Source: GET /api/management/secure/sales-forecast-daily-data?startDate=2026-04-11&endDate=2026-04-11&hotelIds=... → per-hotel {adr, revenue, usages}_
+
+otb_and_sales_forecast:
+  # OTB ("on the books") questions are time-dimensional: "what was booked FOR
+  # stay_date X AS OF snapshot_date Y". There are TWO legitimate data sources;
+  # the key thing is to NEVER conflate "current total" with "OTB at snapshot".
+  hard_rule:
+    - "OTB at snapshot" is NOT "current total". Raw `SELECT ... FROM nelson.line_item WHERE invoice_date = stay_date` gives the CURRENT total for that stay — it does NOT give OTB-at-a-snapshot. You must filter on `confirmed <= snapshot_date` AND recompute cancel-state-as-of-snapshot.
+    - For ANY of these user phrasings, use canonical_sql.otb_at_snapshot (see above):
+        • "OTB as of now vs same time last year"
+        • "OTB on X (as of now)"
+        • "What are we pacing at for X?"
+        • "Same time last year for stay date X"
+    - Last-year pair: stay_date_LY = stay_date - 364 days (DoW-aligned); snapshot_LY = today - 364 days.
+    - If the user asks for "Actual last year" (final pickup), run canonical_sql.revenue_and_adr_for_single_date (no snapshot filter) — that's a DIFFERENT column from OTB and must be presented separately, never swapped for OTB.
+    - Sanity check: if the "OTB this year" and "OTB last year" queries give very different magnitudes (>30%), that's normal for pace comparison — don't second-guess and default to Actual.
+  never_do:
+    - Return the CURRENT total for last-year's stay date and call it "OTB last year". That's the Actual — the OTB-at-equivalent-snapshot is much smaller. This is the #1 wrong answer Sonnet produced on thread 1776863227.
+    - Mix ACCOMMODATION and EXTRA_BED in the COUNT(*) for Room Nights. Revenue sums both; RN counts ACCOMMODATION only.
+    - Conclude "API unreliable — using DB" and then DIY an SQL without the snapshot filter. Use the SQL in canonical_sql.otb_at_snapshot exactly.
+  api_alternative:
+    - If you prefer an API path, `GET /api/management/secure/sales-forecast-daily-data` (JSON) returns snapshot-aware columns. Either source is acceptable as long as the OTB columns are snapshot-aware.
+    - If the API returns empty or 500, fall back to canonical_sql.otb_at_snapshot.
+  what_the_report_columns_mean:
+    OTB_current: Rooms / revenue currently on the books FOR that stay date (snapshot = now).
+    OTB_prior_year_at_equivalent_snapshot: Rooms / revenue that were on the books FOR the -364d stay date AS OF the -364d snapshot date. E.g. for stay date 2026-05-05 (asked 2026-04-22), compare to stay date 2025-05-06 AS OF snapshot 2025-04-23.
+    Actual_prior_year: Final rooms / revenue that were realised FOR the -364d stay date (after pickup — snapshot = now or after the stay). Use this when the user asks "how did last year end up", NOT for OTB pace.
+  yoy_date_arithmetic:
+    this_year_stay_date: as stated by the user (e.g. 2026-05-05)
+    last_year_stay_date: this_year_stay_date - INTERVAL '364 days' (DoW-aligned per Nelson convention). 2026-05-05 (Tue) → 2025-05-06 (Tue). NOT 2025-05-05.
+    last_year_snapshot_date: today - INTERVAL '364 days'. 2026-04-22 → 2025-04-23. Use for pace/OTB comparison.
+  common_wrong_answers_to_avoid:
+    - Using 2025-05-05 as "last year" for 2026-05-05: WRONG. Use 2025-05-06 (the DoW-aligned date).
+    - Joining `line_item` and computing SUM(net_price(...)) and calling it "OTB": WRONG. That's the current total for that stay date; it has no snapshot dimension. For OTB-pace, use the sales-forecast-daily API.
+    - Presenting "Actual last year" as "OTB last year" — those are different columns in the report. The user asking "as of now" means the OTB-at-equivalent-snapshot number, not the final Actual.
+  sample_user_phrasings:
+    - "What's OTB for HKI2 on 5 May vs same time last year?" → sales-forecast-daily-data, compare OTB_current (stay=2026-05-05) with OTB_prior_year_at_equivalent_snapshot (stay=2025-05-06, snapshot=2025-04-23).
+    - "How are we pacing for next weekend vs last year?" → same endpoint, same pair of columns.
+    - "What did we end up with last year on May 6th?" → Actual_prior_year column (no snapshot).
 
 add_a_new_kpi:
   when: A KPI (e.g. ALOS — average length of stay) recurs in questions and the graph doesn't cover it.

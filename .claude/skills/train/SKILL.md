@@ -71,6 +71,12 @@ What it pulls (all read-only, all bounded — no SELECT * on `reservation` / `li
 3. `hotel` table — full roster (id, label, name, city, currency, country, time_zone, available) for the `nelson` schema. Split into active (available=true) and sunset (available=false).
 4. `information_schema.columns` for `room` and `product` — confirms the room-type-via-product.product_id relationship.
 
+**Also run `scripts/reservation-formats.js`** to re-verify the identifier shapes per booking channel (format-length stats + 5-row samples per channel). The output feeds `knowledge/nelson/endpoints/reservations.yaml#identifiers` and `#how_to_route_a_user_supplied_identifier`. Current invariants (refresh date in the leaf):
+- `reservation_code`: exactly 9 digits across ALL channels
+- `uuid`: 36 chars (standard UUID)
+- `booking_channel_reservation_id`: exactly 10 digits, set only for BOOKINGCOM + EXPEDIA
+These shapes drive Sonnet's DB-first routing; keep them in sync with the DB.
+
 Apply the output:
 - `knowledge/nelson/enums.yaml` — mark each enum `✓DB` or `✓source`; set `last_db_refresh: <YYYY-MM-DD>`. Remove any enum value that disappeared from the DB (these are common source-code hallucinations — e.g. `CHECK_IN_INCOMPLETE`, `NO_CHANGE`, `EXTRA`).
 - `knowledge/nelson/tenant-hotels.yaml` — rewrite the `hotels:` (available=true) and `sunset_or_inactive:` lists. Update `city_to_labels` and `ambiguous_cities` accordingly.

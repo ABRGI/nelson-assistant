@@ -50,7 +50,13 @@ export function registerEvents(
   });
 
   app.message(async ({ message, client }) => {
-    if (message.subtype || message.channel_type !== 'im') return;
+    if (message.channel_type !== 'im') return;
+    // file_share is the subtype Slack uses when a user uploads an image /
+    // attachment alongside their message. We still want the text portion to
+    // reach the debug-prefix handler so a `debug ... <image>` message doesn't
+    // get silently dropped. Other subtypes (message_changed, bot_message,
+    // channel_join, etc.) are ignored as before.
+    if (message.subtype && message.subtype !== 'file_share') return;
     if (!('text' in message) || !message.text) return;
     const text = message.text.trim();
     if (!text) return;
@@ -62,6 +68,9 @@ export function registerEvents(
       userId: message.user ?? 'unknown',
       text,
     })) return;
+    // For now, file_share messages that are NOT debug-prefixed fall through
+    // without hitting the agent — the agent can't see file contents yet.
+    if (message.subtype === 'file_share') return;
     enqueue({
       kind: 'ask',
       source: 'dm',

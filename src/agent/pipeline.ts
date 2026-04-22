@@ -33,6 +33,7 @@ export interface PipelineDeps {
   defaultBranch: string;
   sonnetModelId: string;
   psqlReadOnlyUrl?: string;
+  psqlPool?: import('pg').Pool;
   escalationSlackUserId: string;
   authCallbackBaseUrl: string;
   resolveTenant: () => ClientRecord;
@@ -228,6 +229,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         defaultBranch: deps.defaultBranch,
         ...(knowledgeInjection ? { knowledgeInjection } : {}),
         ...(deps.psqlReadOnlyUrl ? { psqlReadOnlyUrl: deps.psqlReadOnlyUrl } : {}),
+        ...(deps.psqlPool ? { psqlPool: deps.psqlPool } : {}),
         onEvent: (event) => {
           if (event.type === 'assistant') {
             for (const block of event.message.content) {
@@ -397,14 +399,22 @@ function looksLikeQuestion(text: string): boolean {
 // to data_query so Sonnet actually runs and the user isn't left waiting on a
 // promise the bot can never fulfil.
 const PROMISE_PATTERNS = [
-  /let me (run|check|query|pull|fetch|look|verify|re[\s-]?run|try)/i,
-  /i['']?ll (run|check|query|pull|fetch|look|verify|re[\s-]?run|try)/i,
+  // Future-tense "I will do this"
+  /let me (run|check|query|pull|fetch|look|verify|re[\s-]?run|try|escalate|flag|notify|ping|tag)/i,
+  /i['']?ll (run|check|query|pull|fetch|look|verify|re[\s-]?run|try|escalate|flag|notify|ping|tag)/i,
   /one\s+(sec|moment|minute)[,.\s]/i,
   /hold on[,.\s]/i,
   /on it[,.\s]/i,
   /thanks for catching that[ \-—,]*let me/i,
-  /i['']?m (going to|about to|gonna) (run|check|query|pull|fetch)/i,
+  /i['']?m (going to|about to|gonna) (run|check|query|pull|fetch|escalate|flag|notify|ping|tag)/i,
   /let me (re)?(-)?run the corrected query/i,
+  // Past-tense "I've done this" — same category of lie, worse because it
+  // implies the action already took place. Classifier has no tools, so none
+  // of these can ever be true. If claiming an action happened, it's data_query.
+  /i['']?ve (flagged|escalated|notified|pinged|tagged|sent|emailed|messaged|forwarded|ran|run|checked|queried|pulled|fetched|looked|verified|logged|recorded|filed|raised)/i,
+  /i (flagged|escalated|notified|pinged|tagged|sent|emailed|messaged|forwarded|ran|checked|queried|pulled|fetched|looked|verified|logged|recorded|filed|raised) (this|it|the|them|him|her|that)/i,
+  /(has|have) been (flagged|escalated|notified|sent|forwarded|pinged|logged|recorded|filed)/i,
+  /(the )?(ops|support|dev|team|escalation user) (has been|have been|will follow|will review|is (flagged|notified))/i,
 ];
 
 function containsUnkeepablePromise(text: string): boolean {
