@@ -1,0 +1,75 @@
+schema: 1
+node: endpoints/vouchers
+purpose: Vouchers (discount + monetary), gift cards, allotments, discount code checks.
+related: [.claude/knowledge/enums.yaml]
+
+public_voucher_lookup:
+  discount_by_code: GET /api/discount/{code}
+  check_availability: GET /api/voucher/discount/check/{label}/{start}/{end}/{rooms}/{adults}/{children}/{code}
+  check_new: GET /api/voucher/discount/check-new/{...}
+
+staff_discount_vouchers:
+  list_all: GET /api/management/secure/voucher/discount/all
+  list_active: GET /api/management/secure/voucher/discount/allNotCancelled
+  list: GET /api/management/secure/voucher/discount
+  save:
+    method: POST
+    path: /api/management/secure/voucher/discount/save
+    destructive: true
+  bulk_create_100_pct:
+    method: POST
+    path: /api/management/secure/voucher/discount/multiple100/create
+    destructive: true
+  cancel:
+    method: PUT
+    path: /api/management/secure/voucher/discount/{id}/cancel
+    destructive: true
+  check_validity: POST /api/management/secure/voucher/discount/checkValidity
+  check_multi: POST /api/management/secure/voucher/discount/checkValidities
+  by_allotment: GET /api/management/secure/voucher/discount/by_allotment_id/{id}
+
+staff_monetary_vouchers:
+  list: GET /api/management/secure/voucher/monetary
+  by_key: GET /api/management/secure/voucher/monetary/{key}
+  save:
+    method: POST
+    path: /api/management/secure/voucher/save
+    destructive: true
+  update:
+    method: PUT
+    path: /api/management/secure/voucher/monetary/update
+    destructive: true
+  import:
+    method: POST
+    path: /api/management/secure/voucher/import/{type}
+    destructive: true
+  send_details_email: POST /api/management/secure/voucher/monetary/{order}/sendVoucherDetailsEmail
+  send_confirmation_email: POST /api/management/secure/voucher/monetary/{order}/sendVoucherConfirmationEmail
+
+voucher_meta:
+  all_categories: GET /api/management/secure/voucher/getAllCategory
+  segments: GET /api/management/secure/voucher/segments
+
+allotments:
+  by_id: GET /api/management/secure/allotment/{id}
+  search: GET /api/management/secure/allotment/search-allotment
+  search_hotel: GET /api/management/secure/allotment/search-hotel-allotment
+  hotel_info: GET /api/management/secure/allotment/hotel-allotment-info/{id}
+  by_hotel_availabilities: GET /api/management/secure/allotment/{hotel}/availabilities
+  by_hotel_available_rooms: GET /api/management/secure/allotment/{hotelId}/available-rooms
+  create:
+    method: POST
+    path: /api/management/secure/allotment/create
+    destructive: true
+  update:
+    method: POST
+    path: /api/management/secure/allotment/update
+    destructive: true
+  update_hotel_allotment:
+    method: POST
+    path: /api/management/secure/allotment/update-hotel-allotment
+    destructive: true
+  cancel:
+    method: POST
+    path: /api/management/secure/allotment/cancel/{id}
+    destructive: true

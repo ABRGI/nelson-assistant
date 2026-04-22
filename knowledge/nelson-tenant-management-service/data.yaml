@@ -1,0 +1,31 @@
+schema: 1
+node: data
+purpose: DynamoDB table + S3 bucket that this service owns.
+related: [.claude/knowledge/endpoints.yaml]
+
+dynamodb:
+  table: nelson-tenants
+  region: eu-central-1
+  partition_key: id (String)
+  sort_key: (none)
+  typical_fields:
+    - tenantId         # UUID for the environment (Nelson's `environmentids` claim references these)
+    - tenantname       # human-readable, e.g. "omena", "salora"
+    - environmentname  # e.g. "prod", "stg", "demo"
+    - sitehost         # base URL for the tenant's Nelson deployment (e.g. https://omena.nelson.management)
+    - displayName      # user-visible label
+    - chain            # OMENAHOTELS | SALOHOTELS | USHOTELS | ECHOTELS
+    - hotels           # optional list of hotels owned by this environment
+  consumers:
+    - nelson-assistant (reads via @aws-sdk/client-dynamodb DocumentClient at boot; src/auth/clients.ts ClientRegistry)
+    - MUI (fetches via API Gateway through this service)
+    - nelson (validates tenant-scoped requests)
+
+s3:
+  bucket: nelson-tenant-properties
+  region: eu-central-1
+  purpose: Per-tenant configuration JSON blobs too large for DynamoDB or that need object versioning.
+  key_pattern: <tenantname>/<environmentname>.json
+
+pg_dependency:
+  note: The repo README mentions a PG database for tenant configurations. In practice the current production path uses DynamoDB + S3 only; the PG reference is legacy.

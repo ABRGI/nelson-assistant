@@ -1,0 +1,24 @@
+schema: 1
+repo: nelson-management-ui
+purpose: >-
+  Angular 20 Management UI (MUI) for hotel staff. Two portals from one codebase:
+  Admin (port 4001, cross-tenant) and Client (port 3000, per-tenant). Calls
+  /api/management/secure/* on the Nelson backend. Multi-tenant via
+  nelson-client-configuration.
+role_in_ecosystem: Front-end that hotel staff log in to. Everything the nelson-assistant calls via /api/management/secure/* is also called from here.
+
+index:
+  - path: .claude/knowledge/stack.yaml
+    when: Framework / dep / entry-point info.
+  - path: .claude/knowledge/portals-and-routes.yaml
+    when: Admin vs Client portal boundary; routing; per-tenant configuration.
+  - path: .claude/knowledge/api-patterns.yaml
+    when: How MUI talks to the Nelson backend (URL constants, shared HTTP helpers).
+  - path: .claude/knowledge/i18n.yaml
+    when: "UI string says X, should say Y" — where translations live.
+  - path: .claude/knowledge/deploys.yaml
+    when: Deploy flow, CodeBuild pipelines, S3+CloudFront hosting.
+
+absolute_rules:
+  - All edits here are PR → review → merge → build → deploy. Nelson Assistant has no direct write path.
+  - See also ../CLAUDE.md + ../docs/code-patterns.md for detailed code conventions.

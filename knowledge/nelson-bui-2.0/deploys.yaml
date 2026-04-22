@@ -1,0 +1,23 @@
+schema: 1
+node: deploys
+purpose: Build + deploy.
+
+build:
+  cmd: npm run build
+  artifacts: build/ (CRA output)
+
+release:
+  ci:
+    - /aws/codebuild/prod-omena-nelson-bui-2_0
+    - /aws/codebuild/demo-nelson-bui-2_0
+    - /aws/codebuild/prod-salo-nelson-bui-2_0
+    - /aws/codebuild/stg-omena-nelson-bui-2_0
+    - /aws/codebuild/stg-salo-nelson-bui-2_0
+  hosting: S3 + CloudFront per tenant.
+
+config_servers:
+  dev: nelson-client-configuration at localhost:3100 (see nelson-client-configuration/.claude/knowledge/layout.yaml)
+  prod: bundled at build time by the per-client CodeBuild pipeline.
+
+env_config:
+  reference: docs/10-environments.md in this repo.

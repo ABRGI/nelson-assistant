@@ -1,0 +1,64 @@
+schema: 1
+node: db
+purpose: When and how to access the Nelson PostgreSQL DB from the agent. Entry into the DB subgraph.
+related: [.claude/knowledge/db/schema.yaml, .claude/knowledge/db/relations.yaml, .claude/knowledge/db/queries.yaml, .claude/knowledge/tasks.yaml]
+
+when_to_use_db:
+  - The Nelson API does not expose the data you need.
+  - The endpoint exists but is listed in .claude/knowledge/bugs.yaml as broken for this case.
+  - The task requires aggregation/joins across hotels, dates, or millions of rows (calling REST endpoint N times is wasteful).
+  - You need historical / point-in-time data the UI doesn't show.
+
+when_NOT_to_use_db:
+  - An endpoint in tasks.yaml already covers it. API is the default.
+  - The query is a write (INSERT/UPDATE/DELETE/DDL). NEVER. The observer role is read-only, but you still must not attempt writes.
+  - You could answer from Slack conversation context instead.
+
+connection:
+  env_var: PSQL_READ_ONLY_URL
+  shape: 'postgres://observer_user:<redacted>@<host>:<port>/nelson'
+  role: read-only observer (SELECT only — ALL writes are blocked at the DB role)
+  availability: Only wired when the runtime secret provides psqlReadOnlyUrl. If not set, the Bash(psql:*) tool still exists but has no URL.
+
+safety_rules:
+  - ALWAYS use the `$ENV_VAR` form: `psql "$PSQL_READ_ONLY_URL" -c "SELECT ..."` — never paste the URL itself.
+  - Prefer `-X` (ignore psqlrc) and `--no-psqlrc` for reproducibility in logs.
+  - Add `LIMIT` to exploratory queries. Default LIMIT 100 unless counting.
+  - Avoid SELECT * on big tables — list columns you need.
+  - For date ranges, use `DATE` bounds (`>= 'YYYY-MM-DD' AND < 'YYYY-MM-DD'`), not `LIKE`.
+  - If a query takes more than a few seconds or scans a lot of rows, STOP and revisit the approach or escalate.
+  - No DDL, no DML, no GRANT/REVOKE — role blocks them, but don't attempt.
+
+discovery:
+  inspect_table: 'psql "$PSQL_READ_ONLY_URL" -c "\\d <table_name>"'
+  list_tables: 'psql "$PSQL_READ_ONLY_URL" -c "\\dt"'
+  show_indexes: 'psql "$PSQL_READ_ONLY_URL" -c "\\d+ <table_name>"'
+  fast_cheat_sheet: .claude/knowledge/db/schema.yaml
+
+output_handling:
+  - For agents: request plain text output with `-A -t` (aligned off, tuples only) or `-F $'\t' -A` for TSV; keep results small and post-process in the agent.
+  - Don't dump thousands of rows to Slack — aggregate first, or return a count + examples.
+
+multi_tenancy:
+  column: tenant_hotel_id on the hotel table
+  rule: All hotel-scoped queries are naturally scoped because you'll be joining on hotel_id. No explicit tenant predicate required in SQL — the role is already scoped by the observer role configuration.
+
+extensions_to_know:
+  btree_gist: Range overlap indexes (room usage, date ranges).
+  pg_trgm: Trigram fuzzy text search (guest names, customer search).
+
+helper_functions:
+  net_price:
+    signature: net_price(price numeric, vat_percentage numeric) → numeric
+    purpose: Returns price with VAT excluded. Used EVERYWHERE in Nelson's revenue/KPI reports.
+    reference: See .claude/knowledge/kpis.yaml — all ADR/RevPAR/Revenue definitions depend on it.
+
+scope_defaults_for_kpi_questions:
+  # Applies when the user asks for a KPI without specifying hotels.
+  default: all hotels with h.available = true — per-hotel breakdown plus a total row.
+  rule_for_reply: Always tell the user what scope you used ("across all available hotels", "for HKI2 only").
+  named_hotel: scope to h.label = <label>.
+
+yoy_convention_reminder: Nelson's reports use -364 days (DoW-aligned), not calendar -1 year. See .claude/knowledge/kpis.yaml#yoy_convention.
+
+full_schema_reference: docs/10-database.md (1012 lines — last resort after db/schema.yaml).

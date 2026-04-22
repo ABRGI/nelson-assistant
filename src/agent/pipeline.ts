@@ -12,6 +12,9 @@ import { ThreadProgressMessage } from '../slack/renderer.js';
 import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
 import type { HaikuClassifier } from './classifier.js';
 import type { ConfidenceScorer } from './confidence.js';
+import type { LeafPicker } from '../knowledge/picker.js';
+import type { KnowledgeBundle } from '../knowledge/loader.js';
+import { renderInjection } from '../knowledge/inject.js';
 import { runAgent } from './runner.js';
 
 export interface PipelineDeps {
@@ -22,6 +25,8 @@ export interface PipelineDeps {
   nonces: NonceStore;
   worktrees: WorktreePool;
   classifier: HaikuClassifier;
+  leafPicker: LeafPicker;
+  knowledge: KnowledgeBundle;
   confidence: ConfidenceScorer;
   chatlog: ChatLog;
   defaultProject: string;
@@ -31,6 +36,7 @@ export interface PipelineDeps {
   escalationSlackUserId: string;
   authCallbackBaseUrl: string;
   resolveTenant: () => ClientRecord;
+  runtimeCwd: string;              // safe directory for the agent process's cwd (no source access)
 }
 
 export function makeHandler(deps: PipelineDeps): JobHandler {
@@ -155,15 +161,21 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
 
     const question = renderHistoryForAgentPrompt(history, job.text);
 
-    progress.update(':package: Setting up your workspace…');
-    const lease = await deps.worktrees.acquire(deps.defaultProject, deps.defaultBranch);
+    // Hot path: pick 1-3 knowledge leaves, pre-inject them into the system
+    // prompt. No worktree allocation, no source-code read on the happy path.
+    // deep_research is the only path back into source and it allocates its own
+    // worktree on demand inside the tool handler.
+    progress.update(':books: Loading the right playbook…');
+    const picked = await deps.leafPicker.pick(job.text);
+    const knowledgeInjection = renderInjection(deps.knowledge, picked.leaves);
+    logEvent('tool_use', { name: 'leaf_picker', input: { question: job.text }, output: { leaves: picked.leaves, reason: picked.reason } }, tenant.tenantId);
     progress.update(':brain: Thinking through your question…');
     try {
       let lastToolName: string | undefined;
       let escalated = false;
       const toolsUsed: string[] = [];
       const result = await runAgent({
-        cwd: lease.dir,
+        cwd: deps.runtimeCwd,
         project: deps.defaultProject,
         tenant,
         tokens,
@@ -174,6 +186,9 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         slack,
         escalationSlackUserId: deps.escalationSlackUserId,
         sonnetModelId: deps.sonnetModelId,
+        worktrees: deps.worktrees,
+        defaultBranch: deps.defaultBranch,
+        ...(knowledgeInjection ? { knowledgeInjection } : {}),
         ...(deps.psqlReadOnlyUrl ? { psqlReadOnlyUrl: deps.psqlReadOnlyUrl } : {}),
         onEvent: (event) => {
           if (event.type === 'assistant') {
@@ -230,8 +245,6 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       await progress.finalize(
         `:x: Something went wrong and I couldn't complete your request.\n\`\`\`${(err as Error).message}\`\`\`\nPlease contact <@${deps.escalationSlackUserId}> for help.`,
       );
-    } finally {
-      await lease.release();
     }
   };
 }
@@ -240,6 +253,7 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__nelson__escalate_to_human: ':raising_hand: Looping in a human teammate…',
   mcp__nelson__git_log: ':mag: Checking recent code changes…',
   mcp__nelson__psql: ':floppy_disk: Querying the Nelson database…',
+  mcp__nelson__deep_research: ':microscope: Opening the Nelson source — this takes a moment…',
   Read: ':books: Checking the Nelson documentation…',
   Grep: ':books: Checking the Nelson documentation…',
   Glob: ':books: Checking the Nelson documentation…',

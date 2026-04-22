@@ -1,0 +1,57 @@
+schema: 1
+node: shared-invariants
+purpose: Rules that span multiple Nelson repos — auth flow, tenant scoping, deploy discipline, data flow between services.
+when_to_load: User asks how something works across services; "auth flow", "tenant isolation", "where does X data go", "how does Y service talk to Z".
+related:
+  - cross-repo/ecosystem.yaml
+  - nelson-user-management-service/flow.yaml
+  - nelson-tenant-management-service/data.yaml
+
+auth_flow_end_to_end:
+  - step: Staff user signs in on the MUI's custom sign-in page (nelson-management-ui) or via the Nelson Assistant's /auth/login/:nonce bot-hosted page.
+  - step: Frontend POSTs username + password to nelson-user-management-service /api/user/login (Lambda).
+  - step: Lambda calls Cognito InitiateAuth USER_PASSWORD_AUTH. Cognito's pre-token-generator (preauthtokengenerator.js) injects custom claims — `environmentids`, `roles` — so the Nelson backend knows which tenants + permissions the user has.
+  - step: Lambda returns IdToken + RefreshToken. Frontend (or the bot) stores them.
+  - step: Subsequent Nelson API calls (to the `nelson` backend) attach the IdToken as Authorization Bearer. Nelson's RBAC reads the claims and scopes the response per-tenant.
+  - step: On token expiry, caller POSTs { username: <sub>, refreshtoken } to /api/user/login for a fresh IdToken. RefreshToken is NOT rotated on refresh.
+
+tenant_isolation:
+  rule: All Nelson backend queries are scoped by tenant_hotel_id on the hotel table. Staff see only hotels in their tenant (silent filter, no error on cross-tenant queries).
+  exception: NELSON_MANAGER role bypasses scoping.
+  source: nelson-user-management-service injects `environmentids` claim via pre-token-generator; nelson backend JdbcHotels.getByTenantHotelIds enforces.
+
+tenant_registry:
+  store: DynamoDB table `nelson-tenants` (eu-central-1).
+  owner: nelson-tenant-management-service (Lambda).
+  consumers: [nelson-assistant (boot-time Scan), nelson-management-ui (via API Gateway), nelson (tenant validation)].
+
+client_configuration_flow:
+  step_1: Guest-facing content (breakfast hours, hotel descriptions, fonts, logos) lives in nelson-client-configuration on GitHub.
+  step_2: Each BUI / MUI / mobile-app build bundles the client config for a specific tenant (omena, salora, etc.) at CodeBuild time.
+  step_3: Runtime changes land via PR on develop → merge → next client deploy picks up the new bundle.
+  implication: Nelson Assistant has NO direct path to change content — every such support request goes via PR on nelson-client-configuration.
+
+reservation_state_source_of_truth:
+  repo: nelson (Spring Boot backend). Other services (BUI, MUI, mobile apps, OTA integrations) read/write through the backend APIs.
+  db: PostgreSQL, one shared instance per tenant.
+  channels: OTA reservations land via channelmanager-* modules (Booking.com, Expedia, BeonX). Failed sync events recorded in ota_failed_reservation table; failover email sent per email-notification recipient config.
+
+kpi_source_of_truth:
+  repo: nelson → nelson-web/src/main/java/nelson/report/ReportService.java
+  authoritative_sql: REVENUE_REPORT / NEW_REVENUE_REPORT / ON_THE_BOOKS_REPORT / SALES_FORECAST_REPORT
+  helper_function: net_price(price, vat_percentage) — PostgreSQL function for VAT-excluded net.
+  yoy_convention: last_year = invoice_date - 364 days (DoW-aligned), not calendar -1 year.
+  see: nelson/kpis.yaml
+
+release_branch_discipline:
+  rule: Knowledge graphs are sourced from release branches only — main for omena-service-app, master for everything else.
+  why: Unstable develop commits can introduce rules/endpoints that don't exist in prod; the agent must never cite them.
+  how: Use /refresh-knowledge-graph or /train skill, both of which read origin/<release> via git show / git ls-tree without checkout.
+
+deploy_coupling:
+  rule: nelson-assistant's knowledge/ must be refreshed before shipping a deploy if the underlying repos changed (new endpoint, new migration, new rule). Otherwise the bot will confidently answer with stale facts.
+  how: run /train (or /refresh-knowledge-graph) → review diff → commit knowledge changes → rebuild Docker image → update ECS service.
+
+log_groups:
+  map: cross-repo/observability.yaml
+  rule_for_agent: Each tenant has its own /ecs/<env>-<tenant>-nelson log group. Use `aws logs tail` with the tenant-matching group; task role is read-only on /ecs/* and /aws/codebuild/*.

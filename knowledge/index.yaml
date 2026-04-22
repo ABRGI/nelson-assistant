@@ -1,0 +1,38 @@
+schema: 1
+node: root-index
+purpose: Master index for nelson-assistant/knowledge/. Explains the tree; NOT picked by the leaf picker (informational only).
+when_to_load: Do not load this file at runtime — it's a navigation reference for humans and the /train skill.
+trained_at: 2026-04-22
+source: >-
+  Seeded from the per-repo .claude/knowledge/ graphs that were committed to each
+  of the 8 in-scope Nelson repos plus nelson-assistant. Refreshed during release
+  cycles via the /train skill in this repo.
+
+structure:
+  nelson/:                          Core Nelson PMS (Spring Boot monolith). Reservations, rooms, pricing, availability, payments, channels, door locks, reports. Largest knowledge section.
+  nelson-user-management-service/:  Cognito-backed user auth Lambda. POST /api/user/login for password + refresh. Nelson Assistant depends on it.
+  nelson-tenant-management-service/: Tenant registry Lambda. Owns nelson-tenants DynamoDB table.
+  nelson-client-configuration/:     Per-client BUI/MUI display config. Content like breakfast hours, hotel descriptions, branding, feature flags.
+  nelson-management-ui/:            Angular 20 Management UI (MUI). Hits /api/management/secure/*.
+  nelson-bui-2.0/:                  React 17 Booking UI (BUI). Public guest-facing booking.
+  omena-mobile-app/:                Flutter guest mobile app. /api/m_app/* endpoints.
+  omena-service-app/:               Flutter staff (cleaner + manager) mobile app. /api/s_app/* endpoints.
+  cross-repo/:                      Information that spans multiple repos (where does X content live, which repo owns Y, log-group map, ecosystem overview).
+
+shape_convention: |
+  Every leaf (*.yaml) begins with:
+    schema: 1
+    node: <leaf-name>
+    purpose: <one sentence>
+    when_to_load: <one sentence trigger; optional — falls back to purpose>
+  followed by structured content. Compact, machine-readable, <200 lines each.
+
+runtime_behavior:
+  - At startup: the service loads every *.yaml under this directory into memory.
+  - Per Slack query: the leaf picker (Haiku, but swappable) selects 1-3 leaves based on the question. Chosen leaves are appended to the Sonnet system prompt with ephemeral prompt caching.
+  - The main agent does NOT read the nelson source tree on the hot path. Only the mcp__nelson__deep_research tool allocates a worktree, and only when the pre-injected leaves fail to answer the question.
+
+release_discipline:
+  - Knowledge must be refreshed before each prod release so the runtime answers reflect the deployed code.
+  - Use the /train skill (.claude/skills/train/SKILL.md) to pull the latest release branch of each in-scope repo, diff against this directory, and propose updates.
+  - Never commit knowledge sourced from develop or feature branches — use release branches only (master for most, main for omena-service-app).

@@ -1,0 +1,89 @@
+schema: 1
+node: endpoints/rooms
+purpose: Room inventory, clean status, room ops, maintenance. Staff prefix.
+related: [.claude/knowledge/enums.yaml]
+
+inventory:
+  list:
+    method: GET
+    path: /api/management/secure/rooms/info
+    query: { hotelId }
+  details:
+    method: GET
+    path: /api/management/secure/rooms/info/details/{roomId}
+  set_capacity:
+    method: POST
+    path: /api/management/secure/rooms/info/set-capacity
+    destructive: true
+  specific_info:
+    method: POST
+    path: /api/management/secure/rooms/info/specific-info
+    destructive: true
+  set_de_prioritized:
+    method: POST
+    path: /api/management/secure/rooms/info/de-prioritized
+    destructive: true
+  set_pet_friendly:
+    method: POST
+    path: /api/management/secure/rooms/info/pet-friendly
+    destructive: true
+
+clean_status:
+  mark_dirty:
+    method: POST
+    path: /api/management/secure/rooms/mark-dirty
+    destructive: true
+  mark_clean:
+    method: POST
+    path: /api/management/secure/rooms/mark-clean
+    destructive: true
+  bulk:
+    - POST /api/management/secure/rooms/mark-dirty-rooms
+    - POST /api/management/secure/rooms/mark-clean-rooms
+  history:
+    method: GET
+    path: /api/management/secure/rooms/{roomId}/clean-event-history
+
+room_ops:
+  change_room:
+    method: POST
+    path: /api/management/secure/hotels/{id}/change-room
+    id: numeric
+    destructive: true
+  swap_room:
+    method: POST
+    path: /api/management/secure/hotels/{id}/swap-room
+    id: numeric
+    destructive: true
+  price_diff:
+    - GET /api/management/secure/hotels/{id}/change-room/room-price-difference
+    - GET /api/management/secure/hotels/{id}/swap-room/room-price-difference
+  room_state:
+    - GET /api/management/secure/hotels/{id}/change-room/room-state
+    - GET /api/management/secure/hotels/{id}/swap-room/room-state
+  is_change_across_room_types:
+    method: GET
+    path: /api/management/secure/is-change-room-across-room-types
+
+maintenance:
+  list: GET /api/management/secure/maintenance
+  categories: GET /api/management/secure/maintenance/category
+  rooms: GET /api/management/secure/maintenance/rooms
+  detail: GET /api/management/secure/maintenance/{id}
+  delete:
+    method: DELETE
+    path: /api/management/secure/maintenance/{id}
+    destructive: true
+
+cleaning_areas:
+  list: GET /api/management/secure/cleaning-areas
+  upload: POST /api/management/secure/cleaning-areas/get-presigned-url   # presigned URL flow
+
+service_app_rooms:
+  # Cleaner / manager views live under /api/s_app/*
+  cleaner_places: GET /api/s_app/secure/cleaner/{hotel}/places
+  manager_places: GET /api/s_app/secure/manager/{hotel}/places
+  process_board:
+    cleaner: GET /api/s_app/secure/cleaner/{hotel}/process-board
+    manager: GET /api/s_app/secure/manager/{hotel}/process-board
+  note: These take the hotel LABEL as `{hotel}` segment.

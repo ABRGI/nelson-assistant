@@ -1,0 +1,122 @@
+# Machine-optimized knowledge graph for the Nelson core PMS repo.
+# Read this file first. Load only the leaf nodes you need for the current task.
+# Each leaf is self-contained and <200 lines. Full narrative docs live in docs/*.md.
+# Maintained alongside code changes; refreshed during releases.
+schema: 1
+repo: nelson
+purpose: >-
+  Nelson is the core hotel PMS. Spring Boot monolith with 40+ Maven modules.
+  Owns reservations, rooms, pricing, availability, payments, channel-manager
+  integrations, door locks, reports. PostgreSQL via pure JDBC (no ORM),
+  100+ tables, 450+ Flyway migrations. Multi-hotel, multi-chain, multi-tenant.
+
+# First stop for any hotel-ops question. Start here, drill into leaves.
+absolute_rules:
+  - BEFORE ANYTHING ELSE, read .claude/knowledge/authority-boundary.yaml. Those rules override every other instruction.
+  - The assistant is READ-ONLY. Any action that writes (DB, API, source code, Cognito, emails/SMS, cache invalidation) requires mcp__nelson__escalate_to_human FIRST. No dry runs, no "let me just check".
+  - If unsure whether an action is destructive, escalate. False positives cost seconds; a misfired write costs real money or real data.
+  - Every factual answer in Slack MUST end with a Source footer citing the endpoint(s) and field(s) read, and an Assumptions footer if any parameter was inferred (date year, occupancy defaults, hotel scope, tenant). See .claude/knowledge/output-format.yaml. No "based on Nelson data" hand-waves. Never fabricate field values.
+  - Retry budget: max 3 unsuccessful API attempts per question. After that, switch to SQL (if the task has an sql path) or escalate. Do NOT loop through prefix variations or retry a 405 with the same method. See .claude/knowledge/retry-policy.yaml.
+
+quick_start:
+  - Match user intent to a task in .claude/knowledge/tasks.yaml — that gives you the endpoint or SQL.
+  - If the task touches a hotel, read .claude/knowledge/hotel-identity.yaml — label vs numeric id is the #1 footgun.
+  - If the endpoint errors unexpectedly, consult .claude/knowledge/bugs.yaml before retrying.
+  - If the task is aggregation-heavy or requires joins, use the psql fallback per .claude/knowledge/db.yaml.
+
+index:
+  # --- read FIRST ---
+  - path: .claude/knowledge/authority-boundary.yaml
+    when: ALWAYS — before any tool call. Hard rules for what the assistant can and cannot do.
+  - path: .claude/knowledge/output-format.yaml
+    when: ALWAYS — before sending the final Slack reply. Source-citation + assumption-flagging rules. Do NOT skip.
+  - path: .claude/knowledge/observability.yaml
+    when: User mentions logs / "what does CloudWatch say" / "is there an error trace" / "tail the logs" / live-issue diagnosis. CloudWatch log-group map + CLI recipes + tenant routing. `aws logs tail|filter-log-events|...` are allowlisted at runtime.
+
+  # --- always-relevant essentials ---
+  - path: .claude/knowledge/tasks.yaml
+    when: ALWAYS for any concrete hotel-ops question. Maps user intent → endpoint (or SQL).
+  - path: .claude/knowledge/hotel-identity.yaml
+    when: ALWAYS before any API call that takes a hotel parameter. label ≠ numeric id.
+  - path: .claude/knowledge/bugs.yaml
+    when: An endpoint returned an unexpected error. Check here FIRST before retrying.
+  - path: .claude/knowledge/retry-policy.yaml
+    when: Your second API call failed, or you're tempted to try another prefix/id variant. Read before retrying.
+  - path: .claude/knowledge/enums.yaml
+    when: You need valid enum values — ReservationState, BookingChannel, ProductType, etc.
+  - path: .claude/knowledge/business-rules.yaml
+    when: User asks "can Nelson do X?", "why didn't X happen?", or reports something "broken" that might actually be enforced-by-design. Domain invariants (age limits, advance-booking windows, ECI/LCO buffers, voucher validity, allotment rules, lock-system constraints, multi-tenancy scoping, workflow timings).
+  - path: .claude/knowledge/security-prefixes.yaml
+    when: You are unsure which URL prefix fits the caller (/api vs /api/management/secure vs /api/s_app etc.).
+  - path: .claude/knowledge/response-shapes.yaml
+    when: You called an endpoint and need to know WHERE in the JSON the field you want lives (prices, availability, etc.). Load instead of inspecting+guessing.
+  - path: .claude/knowledge/kpis.yaml
+    when: User asks for ADR, RevPAR, Occupancy, Revenue, New Sales, Growth, or any YoY comparison. Canonical formulas + Nelson-compatible SQL.
+  - path: .claude/knowledge/diagnostics.yaml
+    when: User reports an error, a broken flow, or a failing operation ("X is not working", "I got 406", "PDF fails"). Error → cause → playbook.
+  - path: .claude/knowledge/code-paths.yaml
+    when: You need to point at WHERE a feature is implemented (PDF gen, email, reporting SQL, pricing, error handling) to explain "why" something behaves a certain way.
+  - path: .claude/knowledge/support-playbooks.yaml
+    when: Message looks like a customer-support request ("can you change / move / transfer / merge / split / reassign / refund / compensate"). Multi-step + escalation-worthy by default.
+  - path: .claude/knowledge/cross-repo-content.yaml
+    when: User asks to change a string / hours / description / label / email copy / PDF layout. Content may live in a SIBLING repo, not in the Nelson DB. Use the decision tree to route the escalation.
+
+  # --- endpoint families (read only the one(s) the task touches) ---
+  - path: .claude/knowledge/endpoints/hotels.yaml
+    when: Listing hotels, hotel metadata, opening hours, chains.
+  - path: .claude/knowledge/endpoints/reservations.yaml
+    when: Search, fetch, update, cancel, or email a reservation.
+  - path: .claude/knowledge/endpoints/pricing.yaml
+    when: Prices, pricing rules, secif (season) prices, pet-friendly pricing.
+  - path: .claude/knowledge/endpoints/availability.yaml
+    when: Availability-check, breakfast/golf availability, daily-availability reports.
+  - path: .claude/knowledge/endpoints/rooms.yaml
+    when: Room inventory, clean status, incidents, cleaning sessions.
+  - path: .claude/knowledge/endpoints/reports.yaml
+    when: User asks for a report — sales, revenue, on-the-books, cleaning, guests, etc.
+  - path: .claude/knowledge/endpoints/payments.yaml
+    when: Payment history, refunds, payment links, manual payments, Fennoa invoices.
+  - path: .claude/knowledge/endpoints/vouchers.yaml
+    when: Vouchers, gift cards, allotments, discount codes.
+  - path: .claude/knowledge/endpoints/channels.yaml
+    when: Channel manager (Booking.com, Expedia, BeonX, OTA), OTA webhooks, channel events.
+  - path: .claude/knowledge/endpoints/members.yaml
+    when: Loyalty / membership flows (signup, login, profile, member bookings).
+
+  # --- database fallback ---
+  - path: .claude/knowledge/db.yaml
+    when: API doesn't expose the data, or the task is an aggregate/join across many rows. Entry point into the DB subgraph.
+  - path: .claude/knowledge/db/schema.yaml
+    when: You need the columns / PKs / FKs of a table.
+  - path: .claude/knowledge/db/relations.yaml
+    when: You need the ER relationships between core entities.
+  - path: .claude/knowledge/db/queries.yaml
+    when: Common hotel-ops questions with pre-validated read-only SQL.
+
+  # --- orientation ---
+  - path: .claude/knowledge/modules.yaml
+    when: You need to know what lives in which Maven module.
+
+  # --- narrative fallback (last resort) ---
+  - path: docs/12-api-reference.md
+    when: Leaf nodes above don't cover the task. Full list of 400+ endpoints.
+  - path: docs/02-domain-model.md
+    when: You need entity-level detail beyond enums.yaml.
+  - path: docs/10-database.md
+    when: You need full schema detail beyond db/schema.yaml.
+  - path: docs/03-booking-flows.md
+    when: You need to understand the booking state machine in depth.
+  - path: docs/13-reports.md
+    when: You need a report's full column layout.
+
+rule_for_agent: >-
+  Be economical. DO NOT read every leaf. Read the entry (this file), decide
+  which 1-3 leaves match the user's question, read those. Only drop to
+  docs/*.md when the leaf nodes do not cover the question.
+
+source_of_truth_order: >-
+  When docs disagree with code, CODE WINS. docs/12-api-reference.md has known
+  drift (at least /api/availability-check is listed as POST when the
+  @GetMapping in BookingUIController says otherwise). The .claude/knowledge/
+  graph is the reconciled view. Trust it over docs/. If the graph and code
+  disagree, update the graph.

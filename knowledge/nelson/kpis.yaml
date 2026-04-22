@@ -1,0 +1,132 @@
+schema: 1
+node: kpis
+purpose: Definitions + canonical SQL for the hotel KPIs that come up constantly — ADR, RevPAR, Occupancy, Revenue, New Sales, Growth, YoY.
+related: [.claude/knowledge/tasks.yaml, .claude/knowledge/db/schema.yaml, .claude/knowledge/db/queries.yaml]
+
+authority: >-
+  These definitions match Nelson's own revenue report SQL in
+  nelson-web/src/main/java/nelson/report/ReportService.java (REVENUE_REPORT
+  and NEW_REVENUE_REPORT). Reuse, don't reinvent — users compare assistant
+  answers to the XLSX reports and expect parity.
+
+core_formula_facts:
+  revenue_source: line_item table (NOT reservation_product)
+  date_field: line_item.invoice_date (night the revenue is attributed to)
+  net_helper: net_price(price, vat_percentage) — PostgreSQL function available to the observer role; returns price excluding VAT
+  product_filter: p.type IN ('ACCOMMODATION','EXTRA_BED')
+  state_filter: >-
+    li.confirmed IS NOT NULL
+    AND ((li.cancelled IS NULL AND li.to_be_cancelled IS NULL) OR li.refundable IS FALSE)
+  hotel_filter: h.available = true   # report scope is available hotels only
+  vat_default: excluded. Nelson's "ADR (excl VAT)", "Revenue" etc. are all net figures.
+
+yoy_convention:
+  nelson_definition: "last year" = 364 days back (invoice_date::date - 364). This is DoW-aligned, not calendar -1 year.
+  why: Tuesdays compare to Tuesdays etc. Retail hotel KPIs are volatile by weekday.
+  example: 2026-04-11 (Saturday) → comparison date 2025-04-12 (Saturday).
+  overrides:
+    if_user_says_calendar_year: use (:start_date::date - INTERVAL '1 year'). Call this out when replying so they know which convention you applied.
+
+scope_defaults:
+  when_user_omits_hotel: use all hotels with h.available = true AND return a per-hotel breakdown + a total row (matches Nelson's report shape). Tell the user this is "across all hotels" in the reply.
+  when_user_names_one_hotel: add AND h.label = $hotel filter. Show a single row.
+  when_user_names_several: add AND h.label = ANY($labels) filter.
+
+kpis:
+
+  revenue:
+    name: Revenue (net / excl VAT)
+    formula: SUM(net_price(price, vat_percentage)) over the period + product_filter + state_filter.
+    unit: hotel.currency (EUR for Nelson hotels)
+
+  usages_or_room_nights_sold:
+    name: Usages (room nights sold)
+    formula: count of qualifying line_item rows (each is one night of ACCOMMODATION or EXTRA_BED).
+
+  room_nights_available:
+    name: Room nights available
+    formula: SUM(rooms where available=true) * number_of_nights_in_period
+    sql_snippet: |
+      SELECT hotel_id, (count(*) * :nights) AS room_nights
+        FROM room
+       WHERE available = true
+       GROUP BY hotel_id
+
+  adr:
+    name: ADR — Average Daily Rate (excl VAT)
+    formula: revenue / usages
+    note: Per Nelson's report, division is NOT rounded; format on the reply side.
+
+  revpar:
+    name: RevPAR — Revenue per Available Room
+    formula: revenue / room_nights_available
+
+  occupancy:
+    name: Occupancy
+    formula: (usages / room_nights_available) * 100
+    unit: percent
+
+  growth_rate:
+    name: Growth
+    formula: ((revenue_current - revenue_prev) / revenue_prev) * 100
+    unit: percent
+    caveat: Inf/NaN when revenue_prev is 0 — use NULLIF in SQL.
+
+  new_sales:
+    name: New Sales (excl VAT)
+    formula: Same revenue formula but anchored to li.confirmed::date (when the booking was confirmed), not invoice_date.
+    use_case: "New sales on date X" → revenue from bookings CONFIRMED on X, regardless of the stay date.
+
+canonical_sql:
+
+  revenue_and_adr_for_single_date:
+    params: [d (date)]
+    description: Per-hotel revenue, usages, ADR, RevPAR, occupancy for one night, with YoY comparison to the same weekday last year.
+    sql: |
+      WITH rev AS (
+        SELECT r.hotel_id,
+               (CASE WHEN li.invoice_date = $1::date THEN 1 ELSE 2 END) AS period,
+               SUM(net_price(li.price, li.vat_percentage)) AS net,
+               count(*) AS usages
+          FROM line_item li
+          JOIN reservation r ON r.id = li.reservation_id
+          JOIN product p     ON p.id = li.product_id
+         WHERE (li.invoice_date = $1::date OR li.invoice_date = ($1::date - 364))
+           AND li.confirmed IS NOT NULL
+           AND ((li.cancelled IS NULL AND li.to_be_cancelled IS NULL) OR li.refundable IS FALSE)
+           AND p.type IN ('ACCOMMODATION','EXTRA_BED')
+         GROUP BY r.hotel_id, period
+      ),
+      rooms AS (
+        SELECT hotel_id, count(*) AS room_nights
+          FROM room
+         WHERE available = true
+         GROUP BY hotel_id
+      )
+      SELECT h.label, h.currency,
+             r1.net                               AS rev_this,
+             r1.usages                            AS usages_this,
+             (r1.net / NULLIF(r1.usages, 0))      AS adr_this,
+             (r1.net / NULLIF(rm.room_nights,0))  AS revpar_this,
+             (r1.usages::numeric / NULLIF(rm.room_nights,0) * 100) AS occupancy_this,
+             r2.net                               AS rev_last,
+             r2.usages                            AS usages_last,
+             (r2.net / NULLIF(r2.usages, 0))      AS adr_last,
+             (r2.net / NULLIF(rm.room_nights,0))  AS revpar_last,
+             (r2.usages::numeric / NULLIF(rm.room_nights,0) * 100) AS occupancy_last,
+             ((r1.net - r2.net) / NULLIF(r2.net,0) * 100)          AS revenue_growth_pct
+        FROM hotel h
+        LEFT JOIN rev  r1 ON r1.hotel_id = h.id AND r1.period = 1
+        LEFT JOIN rev  r2 ON r2.hotel_id = h.id AND r2.period = 2
+        LEFT JOIN rooms rm ON rm.hotel_id = h.id
+       WHERE h.available = true
+       ORDER BY h.label;
+
+  revenue_and_adr_for_range:
+    params: [start_date, end_date]
+    description: Same shape as the Revenue XLSX report in the MUI. Per hotel + total row.
+    sql_reference: nelson-web/src/main/java/nelson/report/ReportService.java REVENUE_REPORT (the ":nights" variable is end_date - start_date + 1).
+
+add_a_new_kpi:
+  when: A KPI (e.g. ALOS — average length of stay) recurs in questions and the graph doesn't cover it.
+  how: Add it here with formula + canonical SQL. If the KPI has a Nelson-specific nuance (like ADR's -364 YoY), document the convention explicitly.

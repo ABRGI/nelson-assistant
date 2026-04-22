@@ -1,0 +1,79 @@
+schema: 1
+node: code-paths
+purpose: Map cross-cutting features to where the code lives. For "why does X happen?" questions where the agent needs to inspect source, not call APIs.
+related: [.claude/knowledge/modules.yaml, .claude/knowledge/diagnostics.yaml]
+
+pdf_generation:
+  framework: Apache PDFBox (org.apache.pdfbox) + org.vandeseer.easytable for table layouts
+  primary_font: Arial Unicode MS (TTF loaded at runtime via HotelUtil.getArialUniFont())
+  key_classes:
+    - nelson-web/src/main/java/nelson/receipt/model/ReceiptPDF.java           # reservation receipt (most-used)
+    - nelson-web/src/main/java/nelson/receipt/model/GiftCardReceiptPDF.java
+    - nelson-web/src/main/java/nelson/manualinvoicing/services/ManualInvoicePDF.java
+    - reservation-core/src/main/java/nelson/reservation/core/model/pdf/PDFTable.java
+    - reservation-core/src/main/java/nelson/reservation/core/model/pdf/SingleColumnPDFForm.java
+    - reservation-core/src/main/java/nelson/reservation/core/model/pdf/SingleRowTable.java
+    - reservation-core/src/main/java/nelson/reservation/core/model/pdf/DualColumnPDFForm.java
+  font_loader: nelson-web/src/main/java/nelson/api/infrastructure/controllers/HotelUtil.java (getArialUniFont)
+  entry_controller: BookingUIController.downloadReceiptInPDF (nelson-web, ~line 3264)
+  known_gap: No control-char sanitization. A literal \t (U+0009) in any text field breaks PDFBox rendering (see diagnostics.yaml#pdf_receipt_no_glyph).
+
+email_generation:
+  template_dir: reservation-core/src/main/resources/email-templates
+  builder: reservation-core/src/main/java/nelson/reservation/core/email/ReservationEmailBuilderHelper.java
+  confirmation_metadata: ConfirmationEmailMetadata (see docs/02-domain-model.md)
+  payment_emails:
+    - reservation-core/src/main/java/nelson/reservation/core/email/PaymentEmailBuilder.java
+    - payment-core/src/main/java/nelson/payment/core/email/PaymentEmailBuilderHelper.java
+  gift_card_emails: reservation-core/src/main/java/nelson/reservation/core/email/GiftCardEmailBuilderHelper.java
+  languages: fi, en, sv, ru, et (et falls back to en in some templates)
+
+reporting_sql:
+  authoritative_source: nelson-web/src/main/java/nelson/report/ReportService.java
+  contains:
+    - REVENUE_REPORT (ADR, RevPAR, Occupancy, YoY -364 days)
+    - NEW_REVENUE_REPORT
+    - ON_THE_BOOKS_REPORT
+    - SALES_FORECAST_REPORT
+  repositories: nelson-web/src/main/java/nelson/report/infrastructure/repositories/
+  controller: nelson-web/src/main/java/nelson/api/infrastructure/controllers/ReportController.java (all produce XLSX)
+
+pricing_engine:
+  public_controller: BookingUIController.getRoomPrices (nelson-web)
+  helper: nelson-web/src/main/java/nelson/api/infrastructure/controllers/BookingUIControllerHelper.java
+  service: pricing-core/src/main/java/nelson/pricing/core/service/AccommodationPriceService.java
+  response_type: nelson-web/src/main/java/nelson/api/model/booking/RoomPrice.java
+  response_shapes_ref: .claude/knowledge/response-shapes.yaml
+
+availability_engine:
+  public_endpoint_handler: BookingUIController (availability-check mappings)
+  admin_variant: /api/management/secure/availability-check — same pipeline, returns AvailabilityInfoForAdmin with ProductOffer.availableRoomDetails populated
+  response_types:
+    - nelson-web/src/main/java/nelson/api/model/booking/AvailabilityInfo.java
+    - nelson-web/src/main/java/nelson/api/model/booking/AvailabilityInfoForAdmin.java
+    - nelson-web/src/main/java/nelson/api/model/booking/ProductOffer.java
+
+error_handling:
+  global: nelson-web/src/main/java/nelson/api/infrastructure/controllers/ApiExceptionHandler.java
+  customer_facing: nelson-web/src/main/java/nelson/reservation/web/infrastructure/error/handler/CustomerExceptionHandler.java
+  mapping:
+    IllegalArgumentException | ValidationException: 406 NOT_ACCEPTABLE   # wraps the exception message into ErrorResponse.NOT_ACCEPTABLE
+    HttpClientErrorException: passes through downstream status
+  error_enum: domain/src/main/java/nelson/domain/error/ApiError.java
+
+channel_manager:
+  core: channelmanager-core/
+  bookingcom: channelmanager-bookingcom/
+  expedia_schemas: channelmanager-expedia-schemas/
+  beonx: channelmanager-beonx/
+  ghc: channelmanager-ghc/
+  events: channel_event table (see db/schema.yaml), EventType/EventStatus enums in enums.yaml
+
+locking:
+  core: locking-core/
+  systems: AXIS, AXBASE, SMARTKEY, VAKA, VANDERBILT
+  receipt_endpoints: see endpoints/rooms.yaml + /api/doors + /api/management/secure/lock-ui
+
+workflows_and_jobs:
+  framework: nFlow (see docs/07-scheduling-jobs.md)
+  test_module: nelson-nflow-test/

@@ -1,0 +1,16 @@
+schema: 1
+repo: omena-service-app
+purpose: >-
+  Flutter (Dart) mobile service app for hotel cleaning/maintenance staff.
+  Calls /api/s_app/* on the Nelson backend. Two staff roles: cleaner + manager.
+role_in_ecosystem: Staff mobile client. Separate from the guest app (omena-mobile-app).
+
+index:
+  - path: .claude/knowledge/stack.yaml
+    when: Framework / dep / build commands.
+  - path: .claude/knowledge/envs-and-build.yaml
+    when: You are building for a specific env/client (production, staging, local; omena, salo).
+
+absolute_rules:
+  - Edits are PR → review → merge → store release. Not a runtime update.
+  - Calls /api/s_app/secure/cleaner/* and /api/s_app/secure/manager/* — see nelson/.claude/knowledge/security-prefixes.yaml. Role-gated JWTs.

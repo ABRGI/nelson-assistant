@@ -1,0 +1,23 @@
+schema: 1
+repo: nelson-client-configuration
+purpose: >-
+  Per-client (per-chain) configuration repo. Holds the JSONs that drive BUI + MUI
+  appearance, feature flags, hotel descriptions, breakfast copy, translations, logos,
+  and admin-portal customization. Also used as the source for exporting client-specific
+  bundles at build time. React-based tooling for local preview (npm run start <client>).
+role_in_ecosystem: >-
+  When a BUI/MUI deploy is built, this repo's config for the target client
+  (omena/salora/admin/demo/exhibition) is bundled in. Hot-change of any text,
+  flag, or description for a hotel lands HERE, not in the Nelson DB.
+
+index:
+  - path: .claude/knowledge/layout.yaml
+    when: You need to know which folder owns which client and which file type.
+  - path: .claude/knowledge/content-files.yaml
+    when: User wants to change text / copy / hours / description visible in BUI or MUI. Maps content → file.
+  - path: .claude/knowledge/dev-and-deploy.yaml
+    when: You are running locally or deploying.
+
+absolute_rules:
+  - Every change here is a PR on the `develop` branch → review → merge → deploy. Nelson Assistant has NO direct write path.
+  - When escalating a content-change request, include the exact file path + JSON key + before/after diff.

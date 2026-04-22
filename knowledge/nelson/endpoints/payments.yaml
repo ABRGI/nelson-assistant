@@ -1,0 +1,118 @@
+schema: 1
+node: endpoints/payments
+purpose: Payment history, refunds, payment links, manual payments, Fennoa invoicing.
+related: [.claude/knowledge/enums.yaml, .claude/knowledge/tasks.yaml]
+
+destructive_rule: All refund / manual-payment / payment-link endpoints are DESTRUCTIVE. The assistant must ALWAYS escalate before calling any of these.
+
+no_direct_operations_for:
+  move_payment_between_reservations:
+    status: NOT SUPPORTED by Nelson API — no endpoint reassigns a payment from one reservation to another.
+    workflow: Refund on source reservation + re-charge on target reservation (two destructive operations, both escalate).
+    playbook: .claude/knowledge/support-playbooks.yaml#move_payment_between_reservations
+  merge_reservations: See support-playbooks.yaml#merge_two_reservations — no direct API.
+  split_group: See support-playbooks.yaml#split_group_reservation — no direct API.
+
+staff_read_only:
+  list_payments:
+    method: GET
+    path: /api/management/secure/payments
+    query: [reservationUuid, chain, from, to]
+  sync_paytrail2_picture:
+    method: GET
+    path: /api/management/secure/sync-paytrail2-picture
+
+staff_refunds_destructive:
+  refund:
+    method: POST
+    path: /api/management/secure/payments/refund
+  refund_broken_item:
+    method: POST
+    path: /api/management/secure/payments/refund-broken-item
+  refund_gift_card:
+    method: POST
+    path: /api/management/secure/payments/refund-gift-card
+  complete_manual_refund:
+    method: POST
+    path: /api/management/secure/complete-manual-refund/{paymentId}
+  add_manual_payment:
+    method: POST
+    path: /api/management/secure/add-manual-payment
+
+payment_links_destructive:
+  create: POST /api/management/secure/reservations/{uuid}/payment-links
+  list: GET  /api/management/secure/reservations/{uuid}/payment-links
+  one: GET   /api/management/secure/reservations/{uuid}/payment-links/{linkUuid}
+  verify: PUT /api/management/secure/reservations/{uuid}/payment-links/{linkUuid}/verify
+
+public_paytrail_v1:
+  initialize: POST /api/payments/initialize
+  success: GET /api/payments/success
+  failure: GET /api/payments/failure
+  notification: GET /api/payments/notification
+  voucher: POST /api/payments/voucher
+  refund: POST /api/payments/refund
+  calc_refund: GET /api/payments/refund/calculate-refunded-amount
+
+public_paytrail_v2_tyl:
+  list_providers: GET /api/payments2/list-providers
+  initialize: POST /api/payments2/initialize
+  success: GET /api/payments2/success
+  cancel: GET /api/payments2/cancel
+  tx_status: GET /api/payments2/{transactionId}
+  refund: POST /api/payments2/refund
+  activate_invoice: POST /api/payments2/activate-invoice/{transactionId}
+
+gift_cards:
+  lookup: GET /api/gift_cards/{giftCardOrderNumber}
+  voucher_status: GET /api/gift_cards/{voucherKey}/status
+  preview: POST /api/gift_card/preview
+  initialize: POST /api/payments/gift_card/initialize
+  success: GET /api/payments/gift_card/success
+  failure: GET /api/payments/gift_card/failure
+  notification: GET /api/payments/gift_card/notification
+  receipt: GET /api/gift-card/{order}/download-receipt/{lang}
+
+fennoa_lifecycle:
+  consolidated:
+    create: POST /api/management/secure/fennoa/sales-invoice/add/{uuid}?isConsolidatedInvoice=true
+    storage: Saved LOCALLY in Nelson as a DRAFT payment (Payment row with status.isDraftConsolidatedInvoice()); no Fennoa invoice yet.
+    cancel_draft:
+      method: DELETE
+      path: /api/management/secure/fennoa/sales-invoice/consolidated/{draftInvoiceId}
+      path_param_gotcha: The {draftInvoiceId} is actually the Nelson PAYMENT id, not a Fennoa invoice id. Source: RealFennoaService.cancelDraftConsolidatedInvoice(Long draftPaymentId).
+      preconditions: Payment must still be in DRAFT status AND fennoaInvoiceId must be null. Otherwise → NotFoundException.
+      destructive: true
+    submit_to_fennoa: POST /api/management/secure/fennoa/sales-invoice/consolidated (destructive — moves the draft into Fennoa)
+  non_consolidated:
+    create: POST /api/management/secure/fennoa/sales-invoice/add/{uuid}?isConsolidatedInvoice=false (default)
+    storage: Created DIRECTLY in Fennoa — no local draft in Nelson.
+    cancel: Not available via Nelson API. If wrong, user must handle in Fennoa UI directly.
+
+fennoa_invoicing_destructive:
+  customers: POST /api/management/secure/fennoa/customers
+  sales_invoice:
+    by_id: GET /api/management/secure/fennoa/sales-invoice/{id}
+    by_no: GET /api/management/secure/fennoa/sales-invoice/invoice-no/{no}
+    approve_send: POST /api/management/secure/fennoa/sales-invoice/approve-and-send/{id}
+    add_to_reservation: POST /api/management/secure/fennoa/sales-invoice/add/{uuid}
+    consolidated_list: GET /api/management/secure/fennoa/sales-invoice/consolidated
+    consolidated_pdf: POST /api/management/secure/fennoa/sales-invoice/consolidated/pdf/{id}
+    consolidated_credits: GET /api/management/secure/fennoa/sales-invoice/consolidated/{id}/credits
+    credit: POST /api/management/secure/fennoa/sales-invoice/credit
+
+manual_invoice_destructive:
+  list: POST /api/management/secure/manual-invoice/reservations
+  count: GET /api/management/secure/manual-invoice/reservations-count
+  create_pdf: POST /api/management/secure/manual-invoice/create-pdf
+  credit: POST /api/management/secure/manual-invoice/credit/{id}
+  latest_for_res: GET /api/management/secure/manual-invoice/latest/reservation/{id}
+  for_res: GET /api/management/secure/manual-invoice/reservation/{id}
+
+invoice_details:
+  method: GET
+  path: /api/management/secure/invoice-details/{uuid}
+
+fake_endpoints_for_test_profile:
+  - FakePaymentController replaces Paytrail v1 in `fake` profile
+  - FakeTylPaymentController replaces Tyl in `fake` profile

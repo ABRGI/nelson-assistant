@@ -1,0 +1,37 @@
+schema: 1
+node: flow
+purpose: Auth flows owned by this service. Followed end-to-end by every Nelson tenant + nelson-assistant.
+related: [.claude/knowledge/endpoints.yaml, .claude/knowledge/cognito.yaml]
+
+password_login:
+  - user POSTs { username, password } to /api/user/login
+  - Lambda calls Cognito InitiateAuth (USER_PASSWORD_AUTH) with calculated SECRET_HASH (HMAC of username + clientId using Cognito app client secret from Secrets Manager)
+  - On success, returns IdToken + AccessToken (optional via returnaccesstoken=true) + RefreshToken
+
+refresh_token_exchange:
+  - caller POSTs { username: <cognito sub>, refreshtoken } to /api/user/login
+  - Lambda calls Cognito InitiateAuth (REFRESH_TOKEN_AUTH) with the same SECRET_HASH scheme using the sub as username
+  - Returns fresh IdToken (short-lived). RefreshToken is NOT rotated on this branch.
+  - This is the branch nelson-assistant hits on every agent run.
+
+password_forgotten:
+  - POST /api/user/forgotpassword → triggers Cognito ForgotPassword (emails code)
+  - POST /api/user/confirmforgotpassword with { username, code, newPassword }
+
+change_password_authenticated:
+  - POST /api/user/changeuserpassword (requires access token)
+
+admin_create_user:
+  - POST /api/user/user (admin) — creates the user in Cognito + inserts into DynamoDB user table.
+  - Temporary password flow: Cognito sends invite email with TEMP_PASSWORD; user must confirm via POST /api/user/confirmuser.
+
+admin_reset_password:
+  - lambda: adminresetpassword.js — forces user into FORCE_CHANGE_PASSWORD state.
+  - destructive — escalate.
+
+list_users_and_roles:
+  - GET /api/user/listusers — reads the user DynamoDB table.
+  - GET /api/user/roles — reads the access-roles table.
+
+pre_auth_hook:
+  - lambda_src/preauthtokengenerator.js — Cognito pre-token-generation hook that injects custom claims (e.g. environmentids) into the IdToken. Runs during every login/refresh.

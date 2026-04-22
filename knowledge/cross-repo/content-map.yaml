@@ -1,0 +1,101 @@
+schema: 1
+node: cross-repo-content
+purpose: >-
+  Where does user-visible content actually live? Many "can you change this text" requests
+  are NOT Nelson DB or API changes — they're PRs against a sibling repo. This map tells the
+  agent which repo to escalate the change to.
+related: [.claude/knowledge/modules.yaml, .claude/knowledge/code-paths.yaml]
+
+rule_for_agent: >-
+  For any "change this text", "update these hours", "the UI shows X but should show Y"
+  request: look up the content type here FIRST. If the change lives in a sibling repo,
+  the agent CANNOT edit it (no write access at runtime) — escalate with the exact file
+  path, JSON key, and before/after diff.
+
+content_map:
+
+  breakfast_descriptions_in_bui:
+    example_symptom: "Joensuu breakfast times shown when adding breakfast to room are wrong"
+    lives_in: nelson-client-configuration
+    file: src/config/omena/breakfast-description.json
+    branch: develop
+    shape: JSON keyed by hotel label (HKI2, HKI3, JOE1, ...). Per-hotel { breakfast: { en, fi } } free-text strings.
+    why_not_nelson_repo: This is BUI display content, not reservation data. Nelson API exposes breakfast as a Product with price + availability; the human-readable hours / address / partner café text is config, not model data.
+    to_change:
+      - Open PR against nelson-client-configuration `develop` branch.
+      - Update the en + fi strings for the affected hotel key.
+      - Deploy flows through the standard nelson-client-configuration release.
+
+  hotel_metadata_and_policies:
+    example_symptom: "change the check-in time for HKI2"
+    lives_in: nelson (DB)
+    table: hotel (columns: check_in_time, check_out_time, time_zone, restaurant_email, ...)
+    endpoint: PUT /api/management/secure/hotel-management/{label}
+    note: Core hotel attributes (times, currency, coordinates, contact info) are in the DB and editable via the management API — not in client-configuration.
+
+  hotel_key_value_attributes:
+    example_symptom: "set a per-hotel flag for X"
+    lives_in: nelson (DB)
+    table: hotel_info (hotel_id, attribute_name, value)
+    note: Free-form key/value bag on the Hotel entity. Used for less-structured attributes.
+
+  app_config_dynamic_flags:
+    example_symptom: "disable golf upsell for POR2"
+    lives_in: nelson (DB + API)
+    table: app_config (key, value, data_type)
+    endpoint: GET / POST / PUT /api/management/secure/app-configs
+    keys_reference: docs/02-domain-model.md#AppConfigKey
+    common_keys: [HOTELS_ENABLE_GOLF, HOTELS_DISABLE_BREAKFAST, CHECK_PAYMENT_AFTER, OMENA_MAX_ADVANCE_BOOKING_YEARS]
+
+  bui_public_i18n_strings:
+    example_symptom: "the 'Book now' button should say something else in Finnish"
+    lives_in: nelson-bui-2.0
+    typical_files: [src/locales/, src/i18n/]
+    change_mode: PR on develop → merge → deploy. No runtime override.
+
+  mui_staff_i18n_strings:
+    example_symptom: "the staff portal label on this page is wrong"
+    lives_in: nelson-management-ui
+    typical_files: [src/locales/, src/i18n/]
+    change_mode: PR on develop → merge → deploy.
+
+  email_and_sms_templates:
+    example_symptom: "update the confirmation email copy"
+    lives_in: nelson (this repo)
+    dirs:
+      - reservation-core/src/main/resources/        # default templates
+      - reservation-core/src/main/resources/SaloHotels/
+      - reservation-core/src/main/resources/<chain>/
+    types: txt + html per {chain} + language.
+    builders: code-paths.yaml#email_generation
+
+  receipt_and_invoice_pdf_layouts:
+    example_symptom: "the receipt PDF is misaligned / wrong footer"
+    lives_in: nelson (this repo)
+    files:
+      - nelson-web/src/main/java/nelson/receipt/model/ReceiptPDF.java
+      - nelson-web/src/main/java/nelson/manualinvoicing/services/ManualInvoicePDF.java
+      - nelson-web/src/main/java/nelson/receipt/model/GiftCardReceiptPDF.java
+    language_pdf_chrome: pdfContentStorageService.getPDFContent(PDFType.RECEIPT, chain, label, lang) — check nelson-client-configuration for the per-hotel/per-language receipt chrome (logos, addresses).
+
+  marketing_site_content:
+    example_symptom: "fix the text on omenahotels.com"
+    lives_in: omena-wordpress
+    note: Awareness-only from nelson-assistant's perspective. Not in scope for knowledge graphs.
+
+  service_app_strings:
+    example_symptom: "cleaner app button label"
+    lives_in: omena-service-app
+    change_mode: PR → merge → app release.
+
+  mobile_app_strings:
+    example_symptom: "guest mobile app copy"
+    lives_in: omena-mobile-app
+    change_mode: PR → merge → app release.
+
+quick_decision_tree:
+  - is_it_hotel_operational_data: Is it stored per-hotel and used by the booking engine (prices, availability, check-in times, open/closed)? → nelson DB via API.
+  - is_it_free_text_user_sees_in_booking_flow: Is it long-form text shown to guests (breakfast hours/description, room extras copy, partner café info)? → nelson-client-configuration (config JSONs).
+  - is_it_ui_button_label_or_form_placeholder: Short UI strings, button labels, placeholders? → the relevant frontend repo (BUI2 for guest, MUI for staff).
+  - is_it_email_or_PDF: → nelson repo templates (reservation-core/src/main/resources) or the PDF layout classes.
+  - is_it_marketing_page: → omena-wordpress (out of scope).

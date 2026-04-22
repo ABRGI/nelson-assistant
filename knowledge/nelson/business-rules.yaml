@@ -1,0 +1,354 @@
+schema: 1
+node: business-rules
+purpose: >-
+  Domain invariants that are enforced in code but not obvious from endpoint documentation.
+  When a user asks "can Nelson do X?" or reports "X is broken", check here FIRST — the
+  answer may be "Nelson forbids that by design" (not a bug, not missing data).
+related:
+  - .claude/knowledge/enums.yaml
+  - .claude/knowledge/tasks.yaml
+  - .claude/knowledge/diagnostics.yaml
+  - .claude/knowledge/support-playbooks.yaml
+rule_for_agent: >-
+  Before answering "why didn't X happen?" or "is Y allowed?", scan this file.
+  If the user's scenario matches a rule, quote the rule + its source. Do NOT
+  speculate. If the rule has an override_path (e.g. admin-only), mention it.
+
+# ==========================================================================
+# GUEST & RESERVATION VALIDATION
+# ==========================================================================
+
+guest:
+  - rule: A minor cannot be the main guest on a reservation — at least one adult must be in the room with any underage guest.
+    source_files:
+      - reservation-core/src/main/java/nelson/reservation/core/model/reservation/ReservationService.java:2620-2643   # validateAndBlockUnderagedGuest / validateAndBlockUnderagedContact / validateAndBlockUnderaged
+      - reservation-core/src/main/java/nelson/reservation/core/model/reservation/ReservationService.java:5899        # getUnderagedThreshold — reads per-chain config
+      - reservation-core/src/main/java/nelson/reservation/core/infrastructure/storage/TenantFeatureConfiguration.java:15  # UNDERAGED_THRESHOLD = "underagedThreshold"
+    source_type: service_validation
+    quote: |
+      int underAgedThreshold = getUnderagedThreshold(hotel.hotelChainName).intValue();
+      LocalDate dateOfBirthFromSsn = SSNValidator.getDateOfBirthFromSsn(ssn);
+      if (dateOfBirthFromSsn != null) {
+          Integer guestAge = Reservation.getAge(dateOfBirthFromSsn, hotel.toLocalDate(clock.instant()));
+          if (guestAge != null && (guestAge.intValue() < underAgedThreshold)) {
+              blocklistService.blockCustomer(email, mobile, firstName, lastName,
+                      Optional.of(ssn), BlocklistService.UNDERAGED_CUSTOMER, BlocklistService.NELSON_AUTHOR);
+              return true;
+          }
+      }
+    applied_to:
+      - main guest contact (validateAndBlockUnderagedContact, L2624)
+      - every guest in the guest list (validateAndBlockUnderagedGuest, L2620)
+    scoping: Threshold is per HOTEL CHAIN, not per tenant/environment — getUnderagedThreshold takes hotelChainName. All hotels under the same chain (e.g. OMENAHOTELS) share one threshold.
+    tenant_config_key: TenantFeatureConfiguration.UNDERAGED_THRESHOLD (= "underagedThreshold"). Default value is 18 when not overridden.
+    verify_threshold_for_chain:
+      api_path_if_exposed: (not exposed via /api/management/secure — tenant properties live in nelson-tenant-management-service, and this particular key is fetched server-side by nelsonTenantPropertiesService.getFeatureConfig)
+      psql: |
+        -- Verification requires reading the tenant-properties store (outside Nelson's direct DB).
+        -- If you need the effective threshold for OMENAHOTELS vs SALOHOTELS, check the
+        -- nelson-tenant-properties S3 bucket or ask the tenant-management team.
+    side_effects:
+      - Creates a blocklist entry with BlocklistService.UNDERAGED_CUSTOMER reason + BlocklistService.NELSON_AUTHOR
+      - Returns true — caller puts the reservation into BLOCKED state until admin review clears it
+      - Logged at INFO: "Guest {email} is underaged with age {N} - dob {…} based on the SSN, start blocking the guest"
+    user_facing_example: "Q: Can a 16-year-old be the main guest on a booking? A: No — Nelson blocks underage guests from being bookers. At least one adult must be the room's main contact. (Threshold is chain-level, default 18.)"
+
+  - rule: Guest age field accepts only 0-17 (children) or empty (adults). Values outside this range are rejected.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/reservation/AgeOfAChildValidator.java
+    source_type: service_validation
+    logic: '@AgeOfAChild annotation enforces Optional<Integer> age in range [0, 17].'
+    user_facing_example: "Q: Can I set a guest age to 25? A: No. The age field is only for children (0-17). Adults have no explicit age field."
+
+  - rule: Placeholder "dummy" guests are auto-created when the booked guest count exceeds named guests; excess are deleted when count drops.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/reservation/ReservationService.java (~L928-965, validateNumberOfGuest)
+    source_type: service_validation
+    user_facing_example: "Q: I booked for 2 guests but only provided 1 name. What happens? A: Nelson creates a placeholder guest. You can name them later in online check-in or MUI."
+
+# ==========================================================================
+# PRICING & ADVANCE BOOKING
+# ==========================================================================
+
+pricing:
+  - rule: Public bookings can't reserve beyond OMENA_MAX_ADVANCE_BOOKING_YEARS (default 2 years). Admin/secure endpoints bypass this.
+    source_file: BookingUIControllerHelper.toReservation + domain/src/main/java/nelson/domain/config/AppConfigService.java
+    source_type: config_flag
+    logic: 'AppConfigKey.OMENA_MAX_ADVANCE_BOOKING_YEARS (INT, default 2). Throws FailedPreconditionCheckExeption if any product endDate > hotel.now().plusYears(N). Only enforced on unauthenticated requests.'
+    override_path: Admin / MUI / /api/management/secure/ endpoints bypass the check.
+    user_facing_example: "Q: Can guests book 3 years ahead publicly? A: No — blocked by the advance-booking cap. Admin can book further ahead via MUI."
+
+  - rule: Refund percentage is capped at 100%.
+    source_file: payment-core/src/main/java/nelson/payment/core/service/RefundCalculator.java (~L107-111)
+    source_type: service_validation
+    logic: 'RefundByPercentage constructor throws IllegalArgumentException if percentage > 100.'
+
+  - rule: Refund amount cannot exceed the amount actually paid.
+    source_file: payment-core/src/main/java/nelson/payment/core/service/RefundCalculator.java (~L72-75, L155-158)
+    source_type: service_validation
+    logic: RefundByAmount and RefundByGiftCard throw RuntimeException if toBeRefundedAmount > totalPaid.
+    user_facing_example: "Q: Guest paid €200. Can I refund €250? A: No — refund is capped at what was actually paid."
+
+  - rule: ENNAKKO7 / ENNAKKO14 / ENNAKKO30 discounts enforce a minimum advance-booking window of 7 / 14 / 30 days respectively. Validity window extends ~2 years ahead.
+    source_file: nelson-web/src/main/java/nelson/reservation/web/infrastructure/ExtendDiscountVoucherJob.java (L28-30)
+    source_type: service_validation
+    logic: Voucher validFrom = TODAY + N days; validUntil = TODAY + 730 days. Bookings inside the window don't qualify.
+    user_facing_example: "Q: Can a guest use ENNAKKO14 for a booking 10 days away? A: No — ENNAKKO14 requires at least 14 days advance."
+
+# ==========================================================================
+# PRODUCT ORDERING & TIMING
+# ==========================================================================
+
+product:
+  - rule: ACCOMMODATION can be ordered until 06:00 AM on the day AFTER check-in.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/product/ProductType.java (ACCOMMODATION.getOrderBefore)
+    source_type: service_validation
+    logic: hotel.getDateTime(serviceDate.plusDays(1), LocalTime.of(6, 0)).toInstant()
+
+  - rule: BREAKFAST can be ordered until 05:00 AM on the service date.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/product/ProductType.java (BREAKFAST.getOrderBefore)
+    source_type: service_validation
+    logic: hotel.getDateTime(serviceDate, LocalTime.of(5, 0)).toInstant()
+    user_facing_example: "Q: Can guests add breakfast on check-in morning? A: Only until 05:00 AM on the morning they're staying."
+
+  - rule: BREAKFAST and GOLF can't be ordered FOR the check-in date (they're for subsequent nights only).
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/product/ProductType.java (isNotAvailableOnCheckinDate)
+    source_type: service_validation
+    logic: productNotAvailableOnCheckinDate returns true for BREAKFAST and GOLF.
+    user_facing_example: "Q: Can I order breakfast for the day guests arrive? A: No — breakfast must be booked for nights that start BEFORE check-in day."
+
+  - rule: ECI/LCO orders are capped by a per-day "guaranteed buffer" that cannot go negative; the sum of ECI and LCO buffers can't exceed the hotel's commonGuaranteedBuffer.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/eci_lco/EciLcoService.java (L72-88, validateMinEciValue / validateMinLcoValue)
+    source_type: service_validation
+    exceptions_thrown: [MinEciBufferNotReached, MinLcoBufferNotReached]
+    user_facing_example: "Q: Why can't I book more ECI for today? A: The hotel's guaranteed ECI buffer is exhausted; no more can be sold."
+
+  - rule: SAMEDATE_ECI_FLEX (same-day early check-in) is unavailable for check-ins after 14:00.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/allocation/AllocationService.java (~L850-860, restrictedSameDateEciFlex)
+    source_type: service_validation
+    logic: Skipped when checkInMode.isEarlier2PM() is false.
+
+  - rule: Additional ECI quota for the NEXT day becomes available after 22:00 on the current day.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/eci_lco/EciLcoService.java (ADDITIONAL_ECI_TIME_START = LocalTime.of(22,0))
+    source_type: service_validation
+    user_facing_example: "Q: Why can we suddenly sell more ECI for tomorrow after 22:00? A: That's when Nelson releases the next-day ECI buffer."
+
+# ==========================================================================
+# ROOM ALLOCATION & CAPACITY
+# ==========================================================================
+
+availability:
+  - rule: Availability searches filter out rooms whose min_capacity exceeds the guest count requested.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/allocation/AllocationService.java (~L840-860)
+    source_type: service_validation
+    user_facing_example: "Q: Why don't I see room 304? A: It has min_capacity=3 and your search was for 1 guest — the room is filtered out."
+
+  - rule: De-prioritized rooms are allocated only if normal rooms are unavailable OR the booking is pet-friendly.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/allocation/AllocationService.java (~L920-945)
+    source_type: service_validation
+    logic: Allocator sorts by is_de_prioritized; de-prioritized rooms rank lower except when pet_friendly=true AND no pet-friendly rooms remain.
+
+# ==========================================================================
+# PAYMENT & FENNOA LIFECYCLE
+# ==========================================================================
+
+payment:
+  - rule: PENDING_CONFIRMATION reservations auto-cancel after CHECK_PAYMENT_AFTER duration (default ~PT30M).
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/reservation/ReservationService.java (L1292-1331, CheckPaymentWorkflow)
+    source_type: config_flag
+    logic: 'AppConfigKey.CHECK_PAYMENT_AFTER (STRING, ISO-8601 duration). Configurable per hotel.'
+    user_facing_example: "Q: How long does a pay-later booking stay reservable? A: Typically 30 minutes; after that Nelson auto-cancels."
+
+  - rule: Refunding a payment that has a Fennoa invoice id marks fennoaPaymentStatus=REFUNDED; refunds before invoice send become NOT_SENT.
+    source_file: payment-core/src/main/java/nelson/payment/core/service/PaymentServiceImpl.java (~L115-130)
+    source_type: service_validation
+
+# ==========================================================================
+# VOUCHERS (discount + monetary)
+# ==========================================================================
+
+voucher:
+  - rule: A monetary voucher is unusable once `used >= amount`.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/billing/MonetaryVoucher.java
+    source_type: service_validation
+    user_facing_example: "Q: A €100 voucher has €75 used. Can I still apply it for €50? A: No — only €25 remaining."
+
+  - rule: A discount voucher is unusable once its usage count reaches the amount limit (balance = amount - used; appliesTo() returns false at balance <= 0).
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/billing/DiscountVoucher.java (~L145-165)
+    source_type: service_validation
+
+  - rule: Cancelled vouchers cannot be applied to any reservation regardless of remaining balance.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/billing/DiscountVoucher.java (~L158, appliesTo)
+    source_type: service_validation
+
+  - rule: A voucher linked to a HARD allotment becomes unusable once that allotment expires.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/billing/DiscountVoucher.java (allotmentId field)
+    source_type: service_validation
+
+# ==========================================================================
+# ALLOTMENTS
+# ==========================================================================
+
+allotment:
+  - rule: HARD allotments strictly limit room count and release unused rooms on expiry via ReleaseRoomsOfExpiredHardAllotmentWorkflow.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/allotment/AllotmentService.java (L120-131)
+    source_type: service_validation
+    user_facing_example: "Q: Hard allotment of 5 rooms ends Apr 30 — what happens to leftovers? A: On Apr 30 unused rooms auto-release into general inventory."
+
+  - rule: SOFT allotments allow overbooking beyond the configured count (non-binding).
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/allotment/AllotmentService.java (L126-128) + SoftAllotment.java
+    source_type: service_validation
+
+  - rule: HARD and SOFT types are mutually exclusive per allotment record for a given date range.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/allotment/AllotmentService.java
+    source_type: service_validation
+
+# ==========================================================================
+# RESERVATION STATE & LIFECYCLE
+# ==========================================================================
+
+reservation:
+  - rule: Reservation state transitions follow a directed graph — cancellations and other terminal states are one-way.
+    source_file: docs/02-domain-model.md (ReservationState enum)
+    source_type: docs_reference
+    logic: |
+      INITIAL → CONFIRMED (payment received)
+             → PENDING_CONFIRMATION (awaiting payment)
+             → CANCELLED (guest or admin)
+             → BLOCKED (security block)
+             → CHECK_IN_INCOMPLETE (partial check-in)
+      CANCELLED is terminal; CHECK_IN_INCOMPLETE cannot be cancelled via public API.
+    user_facing_example: "Q: Can we un-cancel a reservation? A: No — CANCELLED is terminal."
+
+  - rule: CHECK_IN_INCOMPLETE reservations cannot be cancelled via the public API (guest-facing endpoints reject the call); admin MUI can force it.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/reservation/Reservation.java
+    source_type: service_validation
+
+  - rule: Reservations flagged as BLOCKED remain locked (no check-in, no operations) until the CheckBlockedReservationWorkflow re-evaluates blocklist and the guest is removed.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/reservation/ReservationService.java (L1331-1356)
+    source_type: service_validation
+    logic: Workflow runs every checkBlockedReservationAfter (default 60 min).
+    user_facing_example: "Q: Why can't my guest check in? A: Reservation is BLOCKED (underage detection, fraud hold, etc.). Admin must clear the blocklist entry first."
+
+  - rule: Confirmation email is sent PT2M AFTER a reservation transitions to CONFIRMED.
+    source_file: docs/03-booking-flows.md
+    source_type: docs_reference
+    logic: 2-minute delay avoids race conditions with final payment processing.
+
+  - rule: Thank-you email is sent 6 hours AFTER checkout (ThankYouWorkflow).
+    source_file: docs/03-booking-flows.md
+    source_type: docs_reference
+
+  - rule: Group bookings use distinct email templates — WELCOME_GROUP_BOOKING and REMINDER_GROUP_BOOKING — not the individual ones.
+    source_file: docs/02-domain-model.md (Email/SMS Types)
+    source_type: docs_reference
+
+# ==========================================================================
+# CHANNEL MANAGEMENT & OTA
+# ==========================================================================
+
+channel:
+  - rule: BeonX push only runs for hotels whose BeonX mapping exists AND is marked activated; otherwise it silently skips.
+    source_file: channelmanager-core/src/main/java/nelson/channelmanager/core/beonx/service/BeonxService.java (~L200)
+    source_type: service_validation
+    user_facing_example: "Q: Why isn't this reservation syncing to BeonX? A: Check beonx_hotel_mapping — the row is missing or activated=false."
+
+  - rule: Booking.com card validation retries 9 times over ~90 seconds (10s between attempts).
+    source_file: docs/03-booking-flows.md (bookingcom_validate_card_retries)
+    source_type: docs_reference
+
+  - rule: Booking.com card debit retries 5 times over ~100 seconds (20s between attempts).
+    source_file: docs/03-booking-flows.md (bookingcom_debit_retries)
+    source_type: docs_reference
+
+  - rule: OTA reservations (Booking.com, Expedia, BeonX) are polled every 20 seconds and created in CONFIRMED state on arrival.
+    source_file: docs/03-booking-flows.md (OTA Booking Flow)
+    source_type: docs_reference
+
+  - rule: Booking.com availability push runs daily at 01:00 hotel time plus on-demand when availability changes.
+    source_file: docs/03-booking-flows.md (Booking.com Specifics)
+    source_type: docs_reference
+
+  - rule: Booking.com price push runs every 2 minutes.
+    source_file: docs/03-booking-flows.md
+    source_type: docs_reference
+
+  - rule: Expedia reservations require TWO-STEP confirmation — fetch then explicit confirm. Not auto-confirmed on fetch.
+    source_file: docs/03-booking-flows.md (Expedia Specifics)
+    source_type: docs_reference
+
+  - rule: BeonX credentials rotate monthly on the last day of the month. Failed pushes retry after 1 hour (RetrySendBeonxDataWorkflow).
+    source_file: docs/03-booking-flows.md (BeonX Specifics) + reservation-core RetrySendBeonxDataWorkflow
+    source_type: docs_reference
+
+# ==========================================================================
+# LOCK SYSTEM & DOOR CODES
+# ==========================================================================
+
+lock:
+  - rule: Door codes are generated exactly 25 hours before earliest check-in (DoorCodeGenerationWorkflow).
+    source_file: docs/03-booking-flows.md (send_export_lock_before = PT25H)
+    source_type: docs_reference
+
+  - rule: Door codes are emailed to guests at 06:00 on check-in day.
+    source_file: docs/03-booking-flows.md (DoorCodeEmailWorkflow)
+    source_type: docs_reference
+
+  - rule: Door code activation on the lock system happens 15 minutes before the official check-in time.
+    source_file: docs/03-booking-flows.md (active_lock_before_check_in_minutes = 15)
+    source_type: docs_reference
+
+  - rule: Lock codes must be exported to a lock system matching the room's lock_system field — mismatch throws IllegalArgumentException.
+    source_file: locking-core/src/main/java/nelson/locking/core/infrastructure/InMemoryLockConfigurations.java (L33)
+    source_type: service_validation
+    enum_values: [AXIS, AXBASE, SMARTKEY, VAKA, VANDERBILT]
+
+  - rule: Door code cannot be reset before check-in has started OR after reservation is cancelled.
+    source_file: reservation-core/src/main/java/nelson/reservation/core/model/reservation/ReservationService.java (~L1770)
+    source_type: service_validation
+
+# ==========================================================================
+# CONFIGURATION & FEATURE FLAGS
+# ==========================================================================
+
+config:
+  - rule: HOTELS_ENABLE_GOLF (STRING_LIST of hotel labels) — only hotels in this list receive golf upsell emails.
+    source_file: domain/src/main/java/nelson/domain/config/AppConfigKey.java
+    source_type: config_flag
+    user_facing_example: "Q: Golf isn't offered to guests at HEL2. Why? A: HEL2 isn't in HOTELS_ENABLE_GOLF."
+
+  - rule: HOTELS_DISABLE_BREAKFAST (STRING_LIST of hotel labels) — hotels in this list are EXCLUDED from breakfast upsell.
+    source_file: domain/src/main/java/nelson/domain/config/AppConfigKey.java
+    source_type: config_flag
+
+  - rule: CHECK_PAYMENT_AFTER (STRING, ISO-8601 duration) — pending reservations are cancelled if unpaid after this duration. Default ~PT30M.
+    source_file: domain/src/main/java/nelson/domain/config/AppConfigKey.java + ReservationService.java (L1298)
+    source_type: config_flag
+
+  - rule: OMENA_MAX_ADVANCE_BOOKING_YEARS (INT, default 2) — caps public bookings' stay end date.
+    source_file: domain/src/main/java/nelson/domain/config/AppConfigKey.java
+    source_type: config_flag
+    see_also: pricing.rule "Public bookings can't reserve beyond OMENA_MAX_ADVANCE_BOOKING_YEARS..."
+
+# ==========================================================================
+# MULTI-TENANCY & SECURITY
+# ==========================================================================
+
+multi_tenancy:
+  - rule: Staff can only see hotels in their assigned tenant scope (tenant_hotel_id). Cross-tenant queries silently return empty — no error.
+    source_file: nelson-web/src/main/java/nelson/reservation/web/infrastructure/repositories/JdbcHotels.java (getByTenantHotelIds, L1044-1060)
+    source_type: service_validation
+    user_facing_example: "Q: Can staff at Tenant A see Tenant B's reservations? A: No — queries silently return no data across tenants."
+
+  - rule: The NELSON_MANAGER role bypasses tenant scoping (isNelsonManager=true returns all hotels).
+    source_file: nelson-web/src/main/java/nelson/reservation/web/infrastructure/repositories/JdbcHotels.java (getByTenantHotelIds)
+    source_type: service_validation
+    override_path: Only NELSON_MANAGER has cross-tenant visibility.
+
+# ==========================================================================
+# RULES-OF-THUMB FOR THE AGENT
+# ==========================================================================
+
+answering_with_these_rules:
+  - When a user says "why didn't X happen?" or "can Nelson Y?", scan the matching category above.
+  - Quote the rule + cite source_file in the Source footer. If an override_path exists, mention it ("admin can do this via MUI").
+  - NEVER assert "Nelson forbids that" without a concrete rule + source. If no rule matches, say you don't know and escalate or investigate.
+  - If a rule's source_file points at a line number, feel free to Read the file to verify before answering. One Read is cheaper than a wrong confident answer.

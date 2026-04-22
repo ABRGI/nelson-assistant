@@ -1,0 +1,135 @@
+schema: 1
+node: endpoints/reservations
+purpose: Search, fetch, update, cancel, and email reservations.
+related: [.claude/knowledge/tasks.yaml, .claude/knowledge/enums.yaml, .claude/knowledge/bugs.yaml]
+
+identifiers:
+  uuid: varchar(36) — external PK used in most URLs
+  code: short human-visible booking reference — used in activity log endpoints
+
+staff_search_and_fetch:
+  search:
+    method: GET
+    path: /api/management/secure/reservations
+    query:
+      - hotelIds: csv of numeric hotel ids
+      - startDate, endDate: YYYY-MM-DD
+      - dateMode: EXACT | ARRIVAL | DEPARTURE | STAY | CREATED
+      - state: CONFIRMED | CANCELLED | BLOCKED | INITIAL | PENDING_CONFIRMATION | CHECK_IN_INCOMPLETE
+      - channel: NELSON | BOOKINGCOM | EXPEDIA | MOBILEAPP | LEGACY
+      - totalCount: true (recommended — pagination cursor is flaky)
+      - code, uuid, guestName, customerEmail
+  count:
+    method: GET
+    path: /api/management/secure/reservations-count
+  by_uuid:
+    method: GET
+    path: /api/management/secure/reservations/{uuid}
+  rooms_for_reservation:
+    method: GET
+    path: /api/management/secure/reservations/rooms
+  arrivals_broken:
+    method: GET
+    path: /api/management/secure/reservations/arrivals
+    status: BROKEN — returns 500. Use search with dateMode=EXACT instead. See bugs.yaml.
+
+staff_update:
+  update:
+    method: PUT
+    path: /api/management/secure/reservations/{uuid}
+    body: ReservationUpdateRequestBody
+    destructive: true       # agent must escalate
+  cancel:
+    method: DELETE
+    path: /api/management/secure/reservations/{uuid}/cancel
+    destructive: true
+  confirm_pending:
+    method: POST
+    path: /api/management/secure/reservations/{uuid}/confirm
+    destructive: true
+  unblock:
+    method: POST
+    path: /api/management/secure/reservations/{uuid}/unblock
+    destructive: true
+  cancel_change:
+    method: PUT
+    path: /api/management/secure/reservations/{uuid}/cancel-change
+  preview:
+    method: POST
+    path: /api/management/secure/reservation-preview
+  update_lang:
+    method: PUT
+    path: /api/management/secure/reservation/update-lang
+
+guests:
+  list:
+    method: GET
+    path: /api/management/secure/reservations/{uuid}/guests
+  one:
+    method: GET
+    path: /api/management/secure/reservations/{uuid}/guests/{guestId}
+  update:
+    method: PUT
+    path: /api/management/secure/reservations/{uuid}/guests/{guestId}
+    destructive: true
+  delete:
+    method: DELETE
+    path: /api/management/secure/reservations/{uuid}/guests/{guestId}
+    destructive: true
+
+public:
+  create_reservation:
+    method: POST
+    path: /api/reservations
+    body: ReservationRequest
+    note: Public booking creation — not for the assistant to call. Escalate if user asks to make a booking.
+  details_by_uuid:
+    method: GET
+    path: /api/reservations/{uuid}
+  preview:
+    method: GET
+    path: /api/reservation-preview
+  find:
+    method: POST
+    path: /api/findReservation
+  cancel:
+    method: PUT
+    path: /api/reservations/{uuid}/cancel
+    destructive: true
+
+receipt_pdf:
+  method: GET
+  path: /api/reservations/{uuid}/download-receipt/{lang}
+  query_optional:
+    - type: ConfirmationType (default DEFAULT)
+    - refund: bool (default false)
+    - isFromEmail: bool (default false)
+  returns: application/pdf
+
+segments_and_labels:
+  apply_segments:
+    method: POST
+    path: /api/management/secure/reservations/{uuid}/segments
+  label_get:
+    method: GET
+    path: /api/management/secure/reservations/{uuid}/labels/{poId}
+  label_set:
+    method: PUT
+    path: /api/management/secure/reservations/{uuid}/labels/{poId}
+
+activity_log:
+  user_actions:
+    method: GET
+    path: /api/management/secure/user_activity_log/reservation/{code}
+  comments:
+    method: GET
+    path: /api/management/secure/user_activity_log/comments/reservation/{code}
+  add_comment:
+    method: POST
+    path: /api/management/secure/user_activity_log/comment/save
+  system_log:
+    method: GET
+    path: /api/management/secure/reservation-log/{code}
+
+state_machine_reference: docs/03-booking-flows.md
+enum_reference: .claude/knowledge/enums.yaml

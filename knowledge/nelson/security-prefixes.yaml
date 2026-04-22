@@ -1,0 +1,79 @@
+schema: 1
+node: security-prefixes
+purpose: URL family → auth model. Helps the agent pick the right prefix when multiple endpoints could answer a question.
+related: [.claude/knowledge/tasks.yaml]
+
+prefixes:
+  /api/:
+    auth: public (no token)
+    intent: guest-facing
+    consumers: [BUI (booking website), BUI2, public availability checks, public pricing, mobile bookings]
+    examples: [GET /api/hotels, POST /api/availability-check, POST /api/reservations]
+
+  /api/management/secure/:
+    auth: MUI Cognito JWT (staff login)
+    intent: hotel staff operations
+    consumers: [nelson-management-ui (MUI)]
+    used_by_nelson_assistant: YES — this is the prefix nelson-assistant's agent calls. Default for hotel-ops questions.
+    examples: [GET /api/management/secure/reservations, GET /api/management/secure/rooms/info]
+
+  /api/membership/secure/{uuid}/:
+    auth: Membership Cognito JWT (member login)
+    intent: self-service for registered members
+    consumers: [BUI member dashboard, mobile app member area]
+
+  /api/s_app/:
+    auth: Service app public/login
+    intent: service app bootstrap (login, refresh token, version check)
+    consumers: [omena-service-app]
+  /api/s_app/secure/cleaner/:
+    auth: Cleaner JWT
+    consumers: [cleaners]
+  /api/s_app/secure/manager/:
+    auth: Manager JWT (cleaning managers)
+    consumers: [cleaning managers]
+  /api/s_app/secure/:
+    auth: Either cleaner or manager JWT (role-gated per path via {role} segment)
+
+  /api/m_app/:
+    auth: Public / mobile auth (depending on endpoint)
+    consumers: [omena-mobile-app]
+
+  /api/bui2/:
+    auth: Public
+    consumers: [nelson-bui-2.0]
+
+  /api/external/:
+    auth: Varies per provider (API key, basic auth, shared secret)
+    consumers: [OTA webhooks (Booking.com, Expedia), payment gateway callbacks, Hibox]
+
+  /api/webhook/{provider}:
+    auth: Provider-specific
+    consumers: [external webhook senders]
+
+decision_rule_for_agent:
+  - If the question is a hotel-ops / staff operation: prefer /api/management/secure.
+  - If the endpoint exists ONLY under /api (no secure twin): use it as-is; your user's IdToken is still attached harmlessly.
+  - Never call /api/external or /api/webhook — those are inbound from third parties, not for the assistant to invoke.
+  - /api/membership, /api/s_app, /api/m_app, /api/bui2 are scoped to specific clients — only relevant if the user explicitly asks about those apps.
+
+do_not_prefix_substitute:
+  rule: Prefix ≠ interchangeable. Not every /api/X has a /api/management/secure/X twin, and vice versa.
+  anti_patterns:
+    - "/api/hotels works, so /api/management/secure/hotels must exist" → IT DOES NOT. Use /api/hotels even as staff.
+    - "/api/management/secure/reservations exists, so /api/reservations gives the same data" → different endpoints with different semantics (public = create-only + membership flows; secure = full search/edit).
+    - "/api/availability-check exists, so /api/management/secure/availability-check returns the same AvailabilityInfo" → staff variant returns AvailabilityInfoForAdmin with extra fields.
+  rule_when_you_hit_404:
+    - If you already tried a secure path and got 404, check tasks.yaml for the public twin.
+    - If you already tried a public path and got 401, check whether there is a staff-only variant in endpoints/*.yaml.
+    - Do NOT loop through all possible prefixes speculatively.
+
+always_public_endpoints:
+  # Endpoints that are PUBLIC even when the caller is staff. No /api/management/secure twin.
+  - /api/hotels
+  - /api/hotel_room_types
+  - /api/hotel-offers
+  - /api/countries
+  - /api/prices/{label}/...      # has an undocumented staff twin /api/management/secure/prices/... but public works fine
+  - /api/availability-check      # has a staff twin with richer response, but public works as fallback
+  - /api/env

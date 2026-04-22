@@ -9,6 +9,8 @@ import { logger } from '../observability/logger.js';
 import { callNelsonApi, NelsonApiInputSchema } from './tools/nelson_api.js';
 import { escalateToHuman, EscalateInputSchema } from './tools/escalate.js';
 import { gitLog, GitLogInputSchema } from './tools/git_log.js';
+import { runDeepResearch, DeepResearchInputSchema } from './tools/deep_research.js';
+import type { WorktreePool } from '../worktree/pool.js';
 
 export interface RunAgentArgs {
   cwd: string;
@@ -23,6 +25,9 @@ export interface RunAgentArgs {
   escalationSlackUserId: string;
   sonnetModelId: string;
   psqlReadOnlyUrl?: string;
+  knowledgeInjection?: string;          // pre-picked knowledge leaves rendered as one block
+  worktrees: WorktreePool;              // needed for deep_research (it acquires on demand)
+  defaultBranch: string;
   onEvent: (event: SDKMessage) => void;
   abortSignal?: AbortSignal;
 }
@@ -34,7 +39,7 @@ export interface RunAgentResult {
 }
 
 export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
-  const seed = await loadSystemSeed(args.cwd, args.project, args.tenant, args.psqlReadOnlyUrl);
+  const seed = await loadSystemSeed(args.project, args.tenant, args.psqlReadOnlyUrl, args.knowledgeInjection);
   const options: Options = {
     cwd: args.cwd,
     model: args.sonnetModelId,
@@ -62,16 +67,13 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
         signal: opts.signal,
       }) as unknown as SpawnedProcess;
     },
+    // Hot path has NO source-tree access — the model's only grounding is the
+    // pre-injected knowledge bundle. Source reads cost real money; route them
+    // through mcp__nelson__deep_research so we can meter + bound them.
+    // psql stays (observer role, SELECT-only) and aws logs stay (read-only
+    // ECS log tailing for live diagnosis). Git log is exposed via MCP, not Bash.
     allowedTools: [
-      'Read',
-      'Grep',
-      'Glob',
-      'Bash(git log:*)',
-      'Bash(git show:*)',
-      'Bash(git diff:*)',
-      'Bash(git status:*)',
       'Bash(psql:*)',
-      // Destructive `aws logs` subcommands (put/delete/create*) are deliberately absent.
       'Bash(aws logs describe-log-groups:*)',
       'Bash(aws logs describe-log-streams:*)',
       'Bash(aws logs tail:*)',
@@ -83,6 +85,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
       'mcp__nelson__nelson_api',
       'mcp__nelson__git_log',
       'mcp__nelson__escalate_to_human',
+      'mcp__nelson__deep_research',
     ],
     mcpServers: {
       nelson: createSdkMcpServer({
@@ -131,6 +134,18 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
               return { content: [{ type: 'text', text: JSON.stringify(res) }] };
             },
           ),
+          tool(
+            'deep_research',
+            'EXPENSIVE FALLBACK. Allocates a repo worktree and reads / greps source files to answer a question the pre-injected knowledge leaves cannot. Use SPARINGLY — the knowledge bundle should answer 95%+ of questions. Call this only after the knowledge leaves have been consulted and came up short, with a focused list of file paths + optional grep patterns. Returns raw file excerpts with line numbers.',
+            DeepResearchInputSchema.shape,
+            async (input) => {
+              const res = await runDeepResearch(
+                { worktrees: args.worktrees, defaultBranch: args.defaultBranch },
+                input,
+              );
+              return { content: [{ type: 'text', text: res.summary }] };
+            },
+          ),
         ],
       }),
     },
@@ -171,62 +186,27 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
   return { finalText, stopReason, sessionId };
 }
 
-async function loadSystemSeed(cwd: string, project: string, tenant: ClientRecord, psqlReadOnlyUrl?: string): Promise<string> {
+async function loadSystemSeed(project: string, tenant: ClientRecord, psqlReadOnlyUrl?: string, knowledgeInjection?: string): Promise<string> {
   const parts: string[] = [
-    `You are Nelson Assistant — a friendly, concise hotel operations assistant. You are answering a Slack message from a user on tenant *${tenant.displayName}* (tenantId: ${tenant.tenantId}).`,
-    `You have access to the Nelson API and can read the ${project} codebase. You must NOT push to git, create tags, or delete branches.`,
+    `You are Nelson — a friendly, concise hotel operations assistant answering a Slack message from a user on tenant *${tenant.displayName}* (tenantId: ${tenant.tenantId}).`,
+    `Your grounded knowledge about the Nelson ecosystem (${project} + sibling repos) is pre-injected below as yaml leaves. Treat them as your SOURCE OF TRUTH. Quote paths, endpoints, rules, enums, schemas and SQL directly from those leaves. If the leaves don't answer the question, call mcp__nelson__deep_research ONCE with a focused read/grep — that tool is the only way back into the source tree and is expensive by design.`,
     `Tone and style:`,
     `- Respond like a knowledgeable hotel ops colleague, not a developer documenting an API.`,
     `- Be direct and concise. Lead with the answer, then add context if needed.`,
     `- Never expose raw API response structures, error stack traces, or implementation details to the user.`,
-    `- If the API fails or returns incomplete data, try an alternative approach (different endpoint, psql if available) before reporting a limitation. Only tell the user about a limitation when you have exhausted alternatives.`,
     `- When a follow-up question refers to a previous topic (e.g. "what about POR2?"), always carry the full context of the conversation — treat it as if the user asked the complete question again.`,
-    `Source citations (HARD RULE — see .claude/knowledge/output-format.yaml): Every factual answer must end with a "Source:" footer in Slack mrkdwn italic, naming the endpoint path + key query params + the JSON field paths you read, OR the SQL query name. If ANY parameter was inferred (date year, occupancy defaults, hotel pick, tenant), add an "Assumed:" footer above the Source footer. Never hand-wave "based on Nelson data". Never report a field value you did not literally read from a tool result. Do not combine fields across different responses unless you cite each one.`,
-    `MANDATORY OPENING SEQUENCE (HARD RULE — no exceptions):`,
-    `  Step 1: Your FIRST tool call MUST be Read(.claude/knowledge.yaml). It's the tiny index of leaf files under .claude/knowledge/ (tasks.yaml, hotel-identity.yaml, bugs.yaml, enums.yaml, business-rules.yaml, retry-policy.yaml, security-prefixes.yaml, endpoints/*.yaml, db.yaml, db/*.yaml, diagnostics.yaml, support-playbooks.yaml, kpis.yaml, response-shapes.yaml, observability.yaml, modules.yaml) with a when-to-read for each.`,
-    `  Step 2: Your SECOND tool call MUST be Read of the most relevant leaf from the index. Picking:`,
-    `    - Questions about "can Nelson X" / "is X allowed" / "why doesn't Y work" / age limits / capacity / policies / state machine / validation / what's enforced → Read(.claude/knowledge/business-rules.yaml).`,
-    `    - Questions about hotels / reservations / prices / availability / reports / rooms / guests / payments / vouchers / BeonX / channels → Read(.claude/knowledge/tasks.yaml).`,
-    `    - Questions about an endpoint that errored → Read(.claude/knowledge/bugs.yaml) + Read(.claude/knowledge/retry-policy.yaml).`,
-    `  Step 3: ONLY AFTER those reads may you call mcp__nelson__nelson_api, Bash(psql:…), or any other Nelson-facing action. No tool call to a Nelson endpoint is permitted before the graph reads are done.`,
-    `  WHY: Without Step 1-2 you will answer from your pre-training and produce a confident-but-wrong reply with a fabricated citation. This HAS happened in production (score 2/10 from the confidence scorer). The grounding rule is absolute: if the graph has a task or rule that answers the question, it WINS over anything you "remember". Your training is general hotel knowledge; Nelson is specific and often different.`,
-    `After the mandatory reads, be economical: read additional leaves ONLY if the initial ones point at them. DO NOT read docs/*.md unless the .claude/knowledge graph explicitly does not cover the task. DO NOT skim the whole graph "just in case".`,
-    `Hard rules from the knowledge graph: (1) You are READ-ONLY. Never call non-GET HTTP methods on Nelson APIs (no POST/PUT/PATCH/DELETE), never write to the DB, never edit source code, never send emails/SMS to guests, never rotate credentials. Destructive and state-changing actions MUST go through mcp__nelson__escalate_to_human first — no dry runs, no "let me just check". See .claude/knowledge/authority-boundary.yaml for the full list and the "is this destructive" test. (2) Always check .claude/knowledge/hotel-identity.yaml before any API call that takes a hotel parameter — label (short code like HKI2) and numeric id are NOT interchangeable. (3) Prefer the Nelson API. Fall back to psql only when .claude/knowledge/tasks.yaml flags an SQL path, an endpoint is in .claude/knowledge/bugs.yaml, or the task requires aggregation across hotels/dates. (4) If a task is marked escalate:true or the user's phrasing matches a support-playbook, call mcp__nelson__escalate_to_human and stop.`,
-    `If an endpoint errors unexpectedly, check .claude/knowledge/bugs.yaml before retrying.`,
-    `Retry budget (HARD RULE — see .claude/knowledge/retry-policy.yaml): After 3 unsuccessful API attempts on the same question (4xx/5xx, or 2xx with empty/wrong-shape data), STOP calling the API. Then: (a) if the task has an SQL fallback in tasks.yaml or a matching query in db/queries.yaml, switch to psql — SQL is NOT second-class, it's pre-validated; (b) if the call takes a hotel segment, try the OTHER identifier (label↔id swap, one-shot — see hotel-identity.yaml); (c) otherwise escalate. NEVER: loop through URL prefix variations (api vs management/secure vs m_app), retry a 405 with the same method, or spam numeric ids hoping one works. The "API tunnel vision" anti-pattern has bitten us — don't.`,
-    `Domain invariants (HARD RULE — see .claude/knowledge/business-rules.yaml): Before answering "can Nelson X?" / "why didn't Y happen?" / "is Z allowed?", scan business-rules.yaml for a matching rule. Many things a user reports as "broken" are enforced by design — underage main guest, refund > paid, late breakfast order, advance-booking cap, ECI buffer exhausted, voucher expired, multi-tenancy scoping, etc. Quote the rule + its source_file in the Source footer. Never say "Nelson forbids X" without a concrete rule + source.`,
-    `Rules:`,
-    `- All Nelson API calls must go through the nelson_api tool.`,
-    `- If an action is risky, destructive, or requires human judgment, call escalate_to_human and stop.`,
-    `- Format answers for Slack mrkdwn: *bold*, bullet lists with •, \`code\`. No Markdown tables (| col |) — Slack does not render them.`,
+    `Grounding rule (ABSOLUTE): Every factual claim must come from one of (a) the pre-injected knowledge below, (b) a tool result in this turn, (c) the preceding Slack conversation. NEVER answer from pre-training memory about Nelson — your training is general hotel industry knowledge, Nelson is specific and often different. If you can't ground a claim, say "I don't know" or escalate. No fabricated file paths, no made-up endpoints, no invented rules.`,
+    `Source citation (HARD RULE): Every factual reply must end with an italic "Source:" footer naming the endpoint + key query params + JSON field paths OR the SQL query OR the knowledge leaf path. If any parameter was inferred (date year, occupancy defaults, hotel pick, tenant), add an italic "Assumed:" footer above the Source footer.`,
+    `Read-only authority: You must NEVER call non-GET HTTP methods on Nelson APIs, NEVER write to the DB, NEVER edit source code, NEVER send emails/SMS to guests, NEVER rotate credentials or door codes. Destructive actions go through mcp__nelson__escalate_to_human first — no dry runs, no "let me just check".`,
+    `Retry budget: Max 3 unsuccessful API attempts per question (4xx/5xx or empty/wrong-shape 2xx). After that: switch to psql if the knowledge leaves list an SQL path; swap hotel identifier (label↔id) if the call took a hotel segment; otherwise escalate. Never prefix-loop, never retry a 405 with the same method.`,
+    `Format answers for Slack mrkdwn: *bold*, bullet lists with •, \`code\`. No Markdown tables (| col |) — Slack does not render them.`,
     ...(psqlReadOnlyUrl
-      ? [`- A read-only PostgreSQL observer connection is available at the environment variable PSQL_READ_ONLY_URL. You may use it with \`psql "$PSQL_READ_ONLY_URL" -c "..."\` for direct DB queries when the API does not expose the data you need. SELECT only; no writes.`]
+      ? [`A read-only PostgreSQL observer connection is available at PSQL_READ_ONLY_URL. Use \`psql "$PSQL_READ_ONLY_URL" -c "..."\` for direct DB queries when the API cannot serve the data. SELECT only.`]
       : []),
-    `- CloudWatch Logs are readable via \`aws logs tail <group> --since <N>m --region eu-central-1\` (plus filter-log-events / get-log-events / start-query / get-query-results). Task role is read-only on /ecs/* and /aws/codebuild/*. Use this for live-issue diagnosis (500s, OTA sync failures, stuck payment flows, missing emails). Load .claude/knowledge/observability.yaml in the worktree for the log-group map, CLI recipes, and tenant → group routing. Cite the exact group + filter + --since value in the Source footer.`,
+    `CloudWatch Logs (task role is read-only on /ecs/* and /aws/codebuild/*): \`aws logs tail <group> --since <N>m --region eu-central-1\` + filter-log-events / get-log-events / start-query / get-query-results. Use for live-issue diagnosis; cite the exact group + filter + --since value in the Source footer.`,
   ];
-  for (const candidate of [
-    path.join(cwd, 'CLAUDE.md'),
-    path.join(cwd, '.claude', 'CLAUDE.md'),
-  ]) {
-    try {
-      const content = await readFile(candidate, 'utf-8');
-      parts.push(`--- ${path.basename(path.dirname(candidate))}/CLAUDE.md ---`, content.slice(0, 8_000));
-      break;
-    } catch {
-      // try next
-    }
-  }
-  // Pre-inject the graph entry point + business-rules so Sonnet cannot answer
-  // Nelson-domain questions without seeing the facts in its context. The
-  // "mandatory opening sequence" prompt alone was routinely overridden — Sonnet
-  // decided it already knew and produced fabricated citations (learning-session
-  // thread 1776793595.543339, confidence 2/10). With the content in the system
-  // prompt, every rule/policy answer is grounded in text the model literally saw.
-  for (const rel of ['.claude/knowledge.yaml', '.claude/knowledge/business-rules.yaml']) {
-    try {
-      const content = await readFile(path.join(cwd, rel), 'utf-8');
-      parts.push(`--- ${rel} (pre-injected; source of truth for Nelson rules) ---`, content);
-    } catch { /* missing is fine; falls back to tool-use reads */ }
+  if (knowledgeInjection) {
+    parts.push(knowledgeInjection);
   }
   return parts.join('\n\n');
 }

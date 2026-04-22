@@ -1,0 +1,82 @@
+schema: 1
+node: endpoints/availability
+purpose: Availability-check endpoints and per-day/per-product availability feeds.
+related: [.claude/knowledge/enums.yaml, .claude/knowledge/bugs.yaml]
+
+public_availability_check:
+  method: GET             # verified in BookingUIController.java @GetMapping(Urls.AVAILABILITY) line 464
+  path: /api/availability-check
+  query_params:
+    hotel: Long (numeric hotel id) — NOT label; resolve via GET /api/hotels
+    startDate: YYYY-MM-DD
+    endDate: YYYY-MM-DD
+    discountVoucherCode: string, optional
+  returns: AvailabilityInfo   # see .claude/knowledge/response-shapes.yaml
+  gotcha: docs/12-api-reference.md incorrectly lists this as POST with a JSON body. Trust the code (Urls.AVAILABILITY + @GetMapping), not the docs.
+
+staff_availability_check:
+  method: GET             # verified in BookingUIController.java @GetMapping(Urls.SECURE_AVAILABILITY) line 433
+  path: /api/management/secure/availability-check
+  query_params:
+    hotel: Long (numeric hotel id)
+    startDate: YYYY-MM-DD
+    endDate: YYYY-MM-DD
+    discountVoucherCode: string, optional
+    reservationUuid: string, optional (used when editing an existing reservation so availability includes currently-held rooms)
+  returns: AvailabilityInfoForAdmin
+  includes:
+    hotelOffers:
+      productOffers:
+        each_offer: roomType, price (MonetaryAmount total), currentPrices (map<date,Price>), availableRoom, availabilityByMinCapacity
+    eciLcoAvails: per-day ECI/LCO availability
+  gotcha: Same docs-drift as public — docs say POST, code is GET.
+
+breakfast_golf_availability:
+  public:
+    - GET /api/availability/breakfast
+    - GET /api/availability/golf
+  staff:
+    - POST /api/management/secure/availability/breakfast
+    - POST /api/management/secure/availability/golf
+
+by_product_date_feeds:
+  find_room_product_availability_by_date:
+    method: GET
+    path: /api/findRoomProductAvailsDate
+  summary_availability_by_date:
+    method: GET
+    path: /api/findSummaryAvailabilityDate
+
+eci_lco_availability:
+  hotel_stat:
+    method: GET
+    path: /api/management/secure/eci_lco/hotels/{id}/eci-lco-stat
+    id: numeric
+  save:
+    method: POST
+    path: /api/management/secure/eci_lco/save
+    destructive: true
+
+channel_availability:
+  per_hotel_stat:
+    method: GET
+    path: /api/management/secure/channel/hotels/{id}/availability-stat
+    id: numeric
+
+bulk_channel_reset:
+  # /api endpoints that are actually protected by a secretKey parameter.
+  init_available_date:
+    method: POST
+    path: /api/initAvailableDate
+    body_or_query: { secretKey, hotelLabel? }
+    purpose: Re-initialises the full availability window for all OTA channels.
+  init_beyond_horizon_avail:
+    method: POST
+    path: /api/initBeyondHorizonAvail
+    body_or_query: { secretKey, hotelLabel?, startDate, endDate }
+    purpose: Zeros OTA availability for the given date range. endDate > startDate.
+  init_eci_lco_date:
+    method: POST
+    path: /api/initEciLcoDate
+    body_or_query: { secretKey, hotelLabel? }
+  note: All of these are operational re-pushes; assistant should NEVER call them — escalate.

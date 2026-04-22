@@ -1,0 +1,20 @@
+schema: 1
+node: envs-and-build
+purpose: Environment matrix + build / run commands.
+
+envs: [local, local2, staging, production]
+
+run_recipes:
+  staging:
+    - flutter run --dart-define=ENV=staging
+    - flutter build apk --release --dart-define=ENV=staging
+    - flutter build ios --release --dart-define=ENV=staging
+  production:
+    - flutter run --dart-define=ENV=production
+    - flutter build apk --release --dart-define=ENV=production
+    - flutter build appbundle --release --dart-define=ENV=production
+    - flutter build ios --release --dart-define=ENV=production
+  local: flutter run --dart-define=ENV=local    # points at a local Nelson backend; may require VPN / port-forward
+
+env_vars_come_from: .env.<env> file in repo root.
+  security: Some of these likely contain API keys — treat as secrets even though they're committed.

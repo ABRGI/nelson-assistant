@@ -1,0 +1,17 @@
+schema: 1
+repo: omena-mobile-app
+purpose: >-
+  Flutter (Dart) mobile booking app for Omena Hotels guests. Lets guests search,
+  book, manage reservations, and get door codes. Calls /api/m_app/* and some
+  /api/* endpoints on the Nelson backend.
+role_in_ecosystem: Guest mobile client (parallel to the BUI 2.0 web frontend). Published to Android + iOS stores.
+
+index:
+  - path: .claude/knowledge/stack.yaml
+    when: Framework / dep / build commands.
+  - path: .claude/knowledge/envs-and-build.yaml
+    when: You are building for a specific env (local, local2, staging, production).
+
+absolute_rules:
+  - Edits to this repo are PR → review → merge → store release. Not a runtime update.
+  - The mobile app calls a DIFFERENT endpoint family than BUI: primarily /api/m_app/* (see nelson/.claude/knowledge/endpoints/reservations.yaml).

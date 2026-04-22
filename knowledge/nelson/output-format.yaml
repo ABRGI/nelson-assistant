@@ -1,0 +1,66 @@
+schema: 1
+node: output-format
+purpose: HARD RULE for every Slack reply that reports facts from Nelson. Show sources + assumptions so the user can verify.
+related: [.claude/knowledge/authority-boundary.yaml, .claude/knowledge/conventions.yaml]
+
+why_this_matters:
+  - The assistant has been caught returning data that doesn't match what the user sees in Nelson (e.g. a date interpreted as 2025 when the user meant 2026; a price that didn't match the MUI).
+  - Without sources, every answer is a black box. The user can't tell hallucination from data-drift from correct-but-unexpected-behaviour.
+  - Citations also force the agent to *notice* its own assumptions and flag them before answering.
+
+every_factual_reply_must_include:
+  - a "Source" line: the exact endpoint path + key query params + extracted field paths. One line per source.
+  - an "Assumptions" line if the agent inferred any parameter (dates, occupancy, hotel scope, tenant).
+  - for DB answers: the SQL snippet name or a one-line paraphrase of the query.
+
+slack_format:
+  answer_body: concise hotel-ops answer, bulleted or short paragraph. No raw JSON.
+  separator: one blank line.
+  source_footer:
+    - '_Source: GET /api/prices/HKI2/2026-05-10/2026-05-11/1/1/0/ → nelsonPriceList[0].selectedDateRangePrices[0].pricePerDate (€70.65), numberOfAvailableRooms (11)_'
+    - 'Use Slack mrkdwn italic (_..._) for the source line so it visually ranks below the answer.'
+  assumptions_footer:
+    - '_Assumed: 1 room, 1 adult, 1 night; interpreted "10 May" as 2026-05-10 (current year)._'
+  multiple_sources: one line per endpoint/query; in order of use.
+  never: bare "based on Nelson data" — either cite the endpoint or don't make the claim.
+
+what_to_cite:
+  http_endpoint: method, path, key query params (not the whole URL with auth), and the exact JSON field path(s) you read.
+  sql: the query name from db/queries.yaml OR a one-line paraphrase (`SELECT hotel_label, xml_type, sent_date FROM beonx_xml_log ORDER BY sent_date DESC LIMIT 1`).
+  code: file:line if you used the source tree to answer "where does X live".
+  docs: path to the docs/*.md section ONLY when docs were the sole source and no code/API validated it.
+
+what_to_flag_as_assumption:
+  date_interpretation: If user says "10 May" or "last Tuesday", resolve to an explicit YYYY-MM-DD and state it. Today's date is known via the system prompt.
+  occupancy_defaults: If user omitted rooms/adults/children/nights, state the defaults you applied.
+  hotel_scope: If user named a hotel ambiguously (e.g. "Helsinki" → HKI2 vs HKI3), state your pick.
+  tenant: If more than one tenant configured and a default was used, state the tenant.
+  year: When the month+day doesn't include a year, ALWAYS mention which year you used. Past dates older than today → last year; future → this year.
+
+anti_hallucination:
+  rule: Never report a field value you did not literally read from a tool result OR derive via a named formula (e.g. kpis.yaml#adr). If a field isn't in response-shapes.yaml or a known schema, read it from the API response before citing.
+  specific_trap: "Sold out: No" and "Available rooms: 11" came from different endpoints (or not from Nelson at all). Do not combine fields across responses unless both are in the same tool result and explicitly cited.
+  when_source_cannot_be_shown:
+    - If the fact is from conversation context (the user told you earlier), say "per your earlier message" — not a forged endpoint citation.
+    - If it's an inference, say "(inferred)" with the reasoning.
+
+worked_example:
+  user: "What's availability on 10 May for HKI2?"
+  bad_reply: |
+    Here's availability for HKI2 (Helsinki, Lönnrotinkatu) on 10 May 2025:
+    • Available rooms: 11
+    • Price: €70.65/night (1 room, 1 adult)
+    • Sold out: No
+    Check-in from 16:00, check-out by 12:00.
+  why_bad: No sources. Year silently defaulted to 2025. Combines fields that came from different places. Check-in times may be hallucinated.
+  good_reply: |
+    For *HKI2* on *2026-05-10* (1 room, 1 adult, 1 night):
+    • Available rooms: 11
+    • Suggested nightly rate: €70.65
+    • Sold out: no
+
+    _Assumed 2026 (current year); 1 room / 1 adult / 1 night; 1-night stay 2026-05-10→2026-05-11._
+    _Source: GET /api/prices/HKI2/2026-05-10/2026-05-11/1/1/0/ → nelsonPriceList[0].selectedDateRangePrices[0].{pricePerDate, numberOfAvailableRooms, soldOut}_
+
+conversational_short_replies:
+  rule: "When the Haiku classifier routes a message as 'conversational' (greetings, small-talk, follow-ups answerable from chat history), no source citation is needed — but if the follow-up references a prior data claim, reference the prior turn rather than inventing a new source."

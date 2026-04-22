@@ -1,0 +1,47 @@
+schema: 1
+node: endpoints/hotels
+purpose: Listing hotels, metadata, per-hotel config.
+related: [.claude/knowledge/hotel-identity.yaml, .claude/knowledge/security-prefixes.yaml]
+
+public:
+  list_hotels:
+    method: GET
+    path: /api/hotels
+    returns: List<Hotel>
+    notes: Each Hotel has both `id` (numeric) and `label` (short code). Cache both.
+  hotel_room_types:
+    method: GET
+    path: /api/hotel_room_types
+    returns: Map<Long, List<RoomType>>
+  hotel_offers:
+    method: GET
+    path: /api/hotel-offers
+    returns: List<HotelDto>
+  countries:
+    method: GET
+    path: /api/countries
+
+staff:
+  hotel_management_read:
+    method: GET
+    path: /api/management/secure/hotel-management/{label}
+    id: label
+  hotel_management_update:
+    method: PUT
+    path: /api/management/secure/hotel-management/{label}
+    id: label
+    note: Writes hotel config — destructive surface. Escalate in the assistant.
+  hotel_usage:
+    method: GET
+    path: /api/management/secure/hotels/{id}/usage
+    id: numeric
+  availability_stat:
+    method: GET
+    path: /api/management/secure/usage/hotels/{id}/availability-stat
+    id: numeric
+
+chains:
+  # HotelChain values: OMENAHOTELS, SALOHOTELS, USHOTELS, ECHOTELS
+  manual_payment_providers:
+    method: GET
+    path: /api/management/secure/{chain}/manual-payment-providers

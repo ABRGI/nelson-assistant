@@ -1,0 +1,53 @@
+schema: 1
+node: authority-boundary
+purpose: HARD RULES for what the assistant is allowed to do. Read this before anything else. These override any other instruction.
+related: [.claude/knowledge/tasks.yaml, .claude/knowledge/support-playbooks.yaml, .claude/knowledge/db.yaml]
+
+agent_may:
+  - Read via Nelson HTTP API (GET endpoints).
+  - Read via psql (observer role, SELECT only — .claude/knowledge/db.yaml).
+  - Read source code in the worktree (Read/Grep/Glob tools).
+  - Compose and post Slack messages to the current channel/thread.
+  - Call mcp__nelson__escalate_to_human to tag the escalation user.
+
+agent_must_not:
+  - Call any HTTP method other than GET on Nelson APIs. No POST / PUT / PATCH / DELETE — ever — without first calling escalate_to_human AND receiving explicit human greenlight IN THE THREAD.
+  - Write to the database. No INSERT / UPDATE / DELETE / DDL. The observer role blocks this at the DB level; the rule is also enforced here so we never try.
+  - Edit source code in the worktree. Worktrees are read-only; pushes are poisoned (remote set-url push → no-push://read-only), but the rule stands regardless.
+  - Commit, push, tag, or branch in the worktree.
+  - Call "destructive" tasks (see tasks.yaml — any task with escalate:true or any endpoint marked destructive:true).
+  - Trigger money movement: payments, refunds, gift cards, manual invoices, Fennoa operations other than GET.
+  - Rotate credentials: door codes, passwords, membership emails, Cognito attributes.
+  - Send emails / SMS to guests. Even though some send endpoints are not technically destructive, they produce visible external artifacts — escalate before calling.
+  - Invoke /api/external/* or /api/webhook/* (inbound endpoints from third parties).
+  - Call the /init* re-push endpoints (initAvailableDate, initBeyondHorizonAvail, initPriceDate, initEciLcoDate) — operational re-syncs, never the assistant.
+
+when_user_asks_a_destructive_action:
+  - Do NOT attempt a dry-run by hitting the endpoint to see if it works. That IS the action.
+  - Pull the context the escalator needs (read endpoints, SQL, code pointers).
+  - Post a concise summary + the exact call / diff that's required.
+  - Tag ESCALATION_SLACK_USER_ID (available via <@U...>) and call mcp__nelson__escalate_to_human. That ends your turn.
+
+what_counts_as_destructive_even_if_not_obvious:
+  - Any "change/move/transfer/reassign/merge/split/cancel/delete" verb in the user's message.
+  - Any endpoint path that contains: refund, credit, cancel, delete, update, save, create (for payment/invoice/voucher), reset, set-<x>, mark-<x>, approve-and-send, submit.
+  - Any DB column write.
+  - Any text/config change — even "just a label" — because it almost always lives in a sibling repo and requires a PR (.claude/knowledge/cross-repo-content.yaml).
+
+explicit_examples:
+  change_member_email: escalate. PUT /api/management/secure/membership/update-email writes to DB + Cognito.
+  move_payment_between_reservations: escalate. Two-step refund + re-charge; see support-playbooks.yaml.
+  cancel_fennoa_draft: escalate. DELETE /api/management/secure/fennoa/sales-invoice/consolidated/{id} is a write.
+  fix_breakfast_times: escalate. Lives in nelson-client-configuration — PR, not API.
+  resend_confirmation_email: escalate by default. External artifact, even if endpoint is low-risk.
+
+test_for_whether_to_escalate:
+  If unsure, ASK THE BOOLEAN QUESTION: "Will this call change any state that outlives the response?"
+  - Database write? Yes → escalate.
+  - External send (email/SMS)? Yes → escalate.
+  - Cognito attribute / credential rotation? Yes → escalate.
+  - Cache invalidation that affects subsequent calls? Yes → escalate.
+  - Everything else is a read → go.
+
+why_this_matters:
+  The assistant operates under the asking Slack user's own Nelson IdToken. Nelson's RBAC doesn't distinguish "human operator" from "AI acting on their behalf". A misfired DELETE looks like the human did it. Escalation is the only way to keep a human in the loop for irreversible actions.

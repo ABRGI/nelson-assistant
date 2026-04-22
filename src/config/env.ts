@@ -18,8 +18,14 @@ const BootEnvSchema = z.object({
   SECRETS_RUNTIME_NAME: z.string().default('nelson-assistant/runtime'),
   SECRETS_USER_PREFIX: z.string().default('nelson-assistant/user'),
   SECRETS_CLIENT_PREFIX: z.string().default('nelson-assistant/client'),
-  BEDROCK_SONNET_MODEL_ID: z.string().default('anthropic.claude-sonnet-4-6-v1:0'),
-  BEDROCK_HAIKU_MODEL_ID: z.string().default('anthropic.claude-haiku-4-5-20251001-v1:0'),
+  BEDROCK_SONNET_MODEL_ID: z.string().default('eu.anthropic.claude-sonnet-4-6'),
+  BEDROCK_HAIKU_MODEL_ID: z.string().default('eu.anthropic.claude-haiku-4-5-20251001-v1:0'),
+  // Each helper role gets its own model id so we can independently pilot
+  // cheaper models (e.g. Amazon Nova Micro / Lite) in shadow mode without
+  // touching code. Defaults pin to Haiku today.
+  BEDROCK_CLASSIFIER_MODEL_ID: z.string().default('eu.anthropic.claude-haiku-4-5-20251001-v1:0'),
+  BEDROCK_LEAF_PICKER_MODEL_ID: z.string().default('eu.anthropic.claude-haiku-4-5-20251001-v1:0'),
+  BEDROCK_CONFIDENCE_MODEL_ID: z.string().default('eu.anthropic.claude-haiku-4-5-20251001-v1:0'),
   ESCALATION_SLACK_USER_ID: z.string().min(1),
   // Global Nelson auth — user-management-service covers every tenant/env.
   // Both login and refresh-token exchange go through POST /api/user/login.

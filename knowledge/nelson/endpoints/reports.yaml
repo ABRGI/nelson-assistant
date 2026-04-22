@@ -1,0 +1,100 @@
+schema: 1
+node: endpoints/reports
+purpose: XLSX/JSON report feeds for hotel staff. All under /api/management/secure/reports/.
+related: [.claude/knowledge/tasks.yaml]
+
+response_type_default: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet (XLSX binary)
+
+common_query_params:
+  - hotelIds: csv of numeric ids
+  - startDate, endDate: YYYY-MM-DD
+  - chain: HotelChain enum
+
+reports:
+  sales:
+    method: GET
+    path: /api/management/secure/reports/sales
+  revenue:
+    method: GET
+    path: /api/management/secure/reports/revenue
+  new_revenue:
+    method: GET
+    path: /api/management/secure/reports/new-revenue
+  on_the_books:
+    method: GET
+    path: /api/management/secure/reports/on-the-books
+  on_the_books_by_reservation:
+    method: GET
+    path: /api/management/secure/reports/on-the-books-by-reservation
+  daily_availability:
+    method: GET
+    path: /api/management/secure/reports/daily-availability
+  breakfast:
+    method: GET
+    path: /api/management/secure/reports/breakfast
+  golf:
+    method: GET
+    path: /api/management/secure/reports/golf
+  unpaid_expedia_reservations:
+    method: GET
+    path: /api/management/secure/reports/unpaid-expedia-reservations
+  unpaid_reservations:
+    method: GET
+    path: /api/management/secure/reports/unpaid-reservations
+  franchising:
+    method: GET
+    path: /api/management/secure/reports/franchising
+  cleaning:
+    method: GET
+    path: /api/management/secure/reports/cleaning
+  cleaning_list:
+    method: GET
+    path: /api/management/secure/reports/cleaning-list
+  cleaning_summary:
+    method: GET
+    path: /api/management/secure/reports/cleaning-summary
+  cleaning_list_old:
+    method: GET
+    path: /api/management/secure/reports/cleaning-list-old
+  guests:
+    method: GET
+    path: /api/management/secure/reports/guests
+  guests_inhouse:
+    method: GET
+    path: /api/management/secure/reports/guests-inhouse
+  guests_mobile:
+    method: GET
+    path: /api/management/secure/reports/guests-mobile
+  guests_inhouse_mobile:
+    method: GET
+    path: /api/management/secure/reports/guests-inhouse-mobile
+  payments:
+    method: GET
+    path: /api/management/secure/reports/payments
+  financial_summary:
+    method: GET
+    path: /api/management/secure/reports/financial-summary
+  revenue_by_customer:
+    method: GET
+    path: /api/management/secure/reports/revenue-by-customer
+  sales_forecast_daily_xlsx:
+    method: GET
+    path: /api/management/secure/reports/sales-forecast-daily
+    returns: XLSX with the Sales Forecast Daily layout (see docs/13-reports.md)
+  sales_forecast_daily_json:
+    method: GET
+    path: /api/management/secure/sales-forecast-daily-data
+    returns: application/json (same 6-metric-group structure)
+
+report_email_recipients:
+  get: GET /api/management/secure/reports/get_emails
+  update: POST /api/management/secure/reports/update_email
+
+for_the_assistant:
+  - Prefer sales-forecast-daily-data over the XLSX variant when the user wants
+    numbers, not a download — XLSX is not parseable in Slack.
+  - For any XLSX-returning endpoint, the assistant cannot render the content
+    directly. Summarise in prose (if we have a JSON twin) or offer to download
+    via the MUI.
+
+detail_reference: docs/13-reports.md (column layouts for every report).

@@ -28,11 +28,14 @@ import { makeHandler } from './agent/pipeline.js';
 import { HaikuClassifier } from './agent/classifier.js';
 import { ConfidenceScorer } from './agent/confidence.js';
 import { ChatLog } from './observability/chatlog.js';
+import { loadKnowledgeBundle } from './knowledge/loader.js';
+import { LeafPicker } from './knowledge/picker.js';
 
 const DEFAULT_PROJECT = 'nelson';
 // Knowledge graph lands on `develop` first; switch to 'master' once the team's
 // develop→master release flow has merged the graph files.
 const DEFAULT_BRANCH = 'develop';
+const KNOWLEDGE_ROOT = path.resolve(process.cwd(), 'knowledge');
 
 async function main(): Promise<void> {
   const config = await loadConfig();
@@ -51,28 +54,26 @@ async function main(): Promise<void> {
   const resolveTenant = buildTenantResolver(clients, config.DEFAULT_TENANT_ID);
 
   const sshKeyPath = await writeSshKey(config.runtime.githubDeployKey);
+  // The worktree pool now only serves the rare mcp__nelson__deep_research
+  // fallback path. No startup warmup — cold paths are fine because the hot
+  // path doesn't touch source.
   const worktrees = new WorktreePool(config.WORKSPACE_ROOT, buildRemotes(), 4, sshKeyPath);
   await worktrees.init();
-  // Warm the default project's worktree in the background so the first data
-  // query after a task restart doesn't pay the ~60s EFS + git-worktree-add
-  // cold-start cost.
-  void (async () => {
-    try {
-      const lease = await worktrees.acquire(DEFAULT_PROJECT, DEFAULT_BRANCH);
-      await lease.release();
-      logger.info({ project: DEFAULT_PROJECT, branch: DEFAULT_BRANCH }, 'worktree pool warmed');
-    } catch (err) {
-      logger.warn({ err }, 'worktree warmup failed; first query will be slow');
-    }
-  })();
+
+  const knowledge = await loadKnowledgeBundle(KNOWLEDGE_ROOT);
 
   const bedrock = new BedrockRuntimeClient(awsClientConfig(config));
   const classifier = new HaikuClassifier({
-    haikuModelId: config.BEDROCK_HAIKU_MODEL_ID,
+    haikuModelId: config.BEDROCK_CLASSIFIER_MODEL_ID,
     client: bedrock,
   });
+  const leafPicker = new LeafPicker({
+    modelId: config.BEDROCK_LEAF_PICKER_MODEL_ID,
+    client: bedrock,
+    bundle: knowledge,
+  });
   const confidence = new ConfidenceScorer({
-    haikuModelId: config.BEDROCK_HAIKU_MODEL_ID,
+    haikuModelId: config.BEDROCK_CONFIDENCE_MODEL_ID,
     client: bedrock,
   });
 
@@ -95,6 +96,8 @@ async function main(): Promise<void> {
     nonces,
     worktrees,
     classifier,
+    leafPicker,
+    knowledge,
     confidence,
     chatlog,
     defaultProject: DEFAULT_PROJECT,
@@ -104,6 +107,7 @@ async function main(): Promise<void> {
     escalationSlackUserId: config.ESCALATION_SLACK_USER_ID,
     authCallbackBaseUrl: config.AUTH_CALLBACK_BASE_URL,
     resolveTenant,
+    runtimeCwd: os.tmpdir(),
   });
   const enqueue = queue.create(handler);
 

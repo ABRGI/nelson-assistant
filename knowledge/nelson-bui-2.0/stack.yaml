@@ -1,0 +1,39 @@
+schema: 1
+node: stack
+language: typescript
+framework: React 17 (pinned — see pinning_warning)
+node_version: 14+
+build_tool: react-scripts (CRA)
+state: Zustand stores under src/services/stores/ (see docs/02-state-management.md)
+ui_library: Chakra UI 1.8.1 (pinned)
+icons: FontAwesome Pro
+i18n: i18next + react-i18next
+auth_helpers: aws-jwt-verify
+http_client: axios (two pre-configured instances — public + authenticated)
+
+pinning_warning:
+  message: React 17 must NOT be upgraded. The following versions are mutually pinned; upgrading any of them breaks the build.
+  pinned_versions:
+    react: 17.0.2
+    react-dom: 17.0.2
+    typescript: 4.6.3
+    '@chakra-ui/react': 1.8.1
+    '@testing-library/react': 12.1.5
+    '@testing-library/user-event': 13.5.0
+    '@types/react': 17.0.44
+    '@types/react-dom': 17.0.11
+
+entry_points:
+  index: src/index.tsx
+  app: src/App.tsx
+  router: src/routes/ or equivalent (see docs/01-architecture.md)
+  api_wrappers: src/services/api/*.ts   # authApi, bookingApi, etc. — each fn returns { data, err }
+  global_state: src/services/utils/global.ts  # GlobalHotelConfig singleton
+  stores: src/services/stores/*.ts       # Zustand
+  localization: src/services/localization/{i18n,locales}.ts
+  utils: src/services/utils/
+
+conventions:
+  api_returns: Every function in src/services/api/ returns { data, err }; never throws. Caller inspects err.
+  feature_flags: Read only from GlobalHotelConfig.feature.* — do NOT hit the config endpoints from feature code.
+  admin_access_gate: Components calling /api/management/secure/* must check adminAccess === true before invoking omenaAxiosPrivate. See docs/07-api-reference.md.

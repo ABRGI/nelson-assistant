@@ -1,0 +1,20 @@
+schema: 1
+node: i18n
+purpose: Where guest-facing BUI strings live + how to change them.
+
+inside_this_repo:
+  config: src/services/localization/i18n.ts
+  locales: src/services/localization/locales.ts
+  stack: i18next + react-i18next
+
+cross_repo_strings:
+  long_form_copy: nelson-client-configuration → src/config/<client>/breakfast-description.json and similar per-hotel files
+  shared_bundles: nelson-client-configuration → src/language/ (managed with i18n-ally extension)
+  config_fetch: GlobalHotelConfig is built from /config/hotel-config.json + /config/feature-config.json — these are served by nelson-client-configuration at dev port 3100, and from the deployed bundle in prod.
+
+request_routing:
+  "fix the text on the booking page button": grep this repo for the key; if not inlined, the string lives in nelson-client-configuration shared bundle → PR there.
+  "per-hotel description/hours": nelson-client-configuration → src/config/<client>/<file>.json → PR there.
+  "add a new language": this repo (wire into locales.ts + i18n.ts + add translation bundle in nelson-client-configuration).
+
+escalation_rule: Every user-facing text change = PR, not a runtime update.

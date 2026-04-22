@@ -1,0 +1,25 @@
+schema: 1
+node: api-patterns
+purpose: How MUI constructs HTTP calls to the Nelson backend. Use the constants; don't hardcode.
+related: [.claude/knowledge/stack.yaml]
+
+url_constants:
+  file: src/app/helpers/constants.ts
+  highlights:
+    - CONSTANT.API_MANAGEMENT_SECURE → '/api/management/secure'
+    - CONSTANT.API_TENANT → '/api/tenant'
+    # See the file for the full set.
+
+http_services:
+  location: src/app/services/
+  pattern: Every backend family has a dedicated service class. Components never HttpClient.get() directly — they go through a service.
+
+translations_api:
+  service: src/app/services/translations.service.ts
+  component: src/app/components/internal-tools/translations/translations.component.*
+  purpose: MUI has an internal tool to edit translations. Depending on config, this may call into the nelson-client-configuration pipeline.
+
+code_pattern_reminders:
+  - All URLs built from `CONSTANT.API_*` prefixes — do not inline /api/management/secure/... string literals.
+  - For auth tokens, the app attaches the IdToken via an HTTP interceptor; feature code never sets Authorization manually.
+  - Errors from Nelson are rendered via a shared error-handler service; UI components should rethrow / surface via toast helpers, not swallow.

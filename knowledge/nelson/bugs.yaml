@@ -1,0 +1,53 @@
+schema: 1
+node: bugs
+purpose: Known API bugs + workarounds. Save exploration tokens — check here FIRST when an endpoint returns an unexpected error.
+related: [.claude/knowledge/tasks.yaml, .claude/knowledge/hotel-identity.yaml]
+
+bugs:
+  - endpoint: GET /api/management/secure/reservations/arrivals
+    status: broken
+    symptom: 500 Internal Server Error, message mentions "hotel is null"
+    workaround: >-
+      Use GET /api/management/secure/reservations with dateMode=EXACT,
+      startDate=today, endDate=today, and the target hotelIds.
+    fallback_sql: |
+      SELECT r.uuid, r.code, r.start_date, r.end_date, r.adults, r.children, r.state
+        FROM reservation r
+       WHERE r.hotel_id = ANY($1::bigint[])
+         AND r.start_date = CURRENT_DATE
+         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE');
+
+  - endpoint: GET /api/prices/{hotelId}/...
+    status: path-param gotcha (not really a bug — a naming mismatch in docs)
+    symptom: 404 when you pass a numeric hotel id
+    workaround: >-
+      This endpoint expects the hotel LABEL (short code like HKI2), not the
+      numeric id. See .claude/knowledge/hotel-identity.yaml.
+
+  - endpoint: /api/availability-check AND /api/management/secure/availability-check
+    status: docs-drift — fixed here, docs/12-api-reference.md still wrong
+    symptom: 405 Method Not Allowed when called as POST
+    root_cause: >-
+      BookingUIController declares these as @GetMapping with @RequestParam query params
+      (verified in nelson-web/src/main/java/.../BookingUIController.java lines 433 and 464).
+      docs/12-api-reference.md incorrectly lists them as POST with a JSON body — ignore the docs.
+    correct_usage: >-
+      GET /api/management/secure/availability-check?hotel=<numericId>&startDate=<d>&endDate=<d>[&discountVoucherCode=&reservationUuid=]
+      GET /api/availability-check?hotel=<numericId>&startDate=<d>&endDate=<d>[&discountVoucherCode=]
+    note: Param `hotel` is numeric id (Long), NOT label. One hotel per request; to cover multiple hotels, call per hotel.
+
+  - endpoint: GET /api/management/secure/reservations (pagination)
+    status: flaky
+    symptom: Page cursor sometimes drops or duplicates results.
+    workaround: >-
+      Use ?totalCount=true to get a count first. For listings, prefer narrow
+      date windows + dateMode=EXACT over server-side paging.
+
+  - endpoint: /api/management/secure/secif_pricings/{hotelId}/...
+    status: caveat
+    symptom: Returns empty array, not an error, when no season prices configured.
+    workaround: Empty result is valid — it means "no overrides". Fall back to base pricing_rules.
+
+add_a_new_entry:
+  when: You discover a reproducible API bug or path-param trap during troubleshooting.
+  how: Append to this file with {endpoint, status, symptom, workaround}. Keep entries terse.

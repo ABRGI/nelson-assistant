@@ -1,0 +1,23 @@
+schema: 1
+node: stack
+language: dart
+framework: Flutter
+platforms: [android, ios]
+
+entry_points:
+  pubspec: pubspec.yaml
+  main: lib/main.dart
+  android_manifest: android/app/src/main/AndroidManifest.xml
+  ios_config: ios/Runner/Info.plist
+  google_services:
+    - android/app/google-services.json
+    - ios/Runner/GoogleService-Info.plist
+
+env_variants:
+  files:
+    - .env.local
+    - .env.local2
+    - .env.prod
+    - .env.test
+  selection_via: --dart-define=ENV=<env> and optionally --dart-define=ENVTYPE=<production|staging|all|local>
+  client_selection: --dart-define=CLIENT=<omena|salora>

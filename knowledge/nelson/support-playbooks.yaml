@@ -1,0 +1,150 @@
+schema: 1
+node: support-playbooks
+purpose: Common customer-support requests that are multi-step and/or destructive. Agent recognizes the pattern, pulls context, proposes the workflow, escalates.
+related: [.claude/knowledge/tasks.yaml, .claude/knowledge/endpoints/payments.yaml, .claude/knowledge/endpoints/reservations.yaml]
+
+usage_contract:
+  - Match the user's phrasing to a playbook below.
+  - Follow the "agent does" step list exactly. Pull context, do NOT attempt the destructive step yourself.
+  - Use the reply_template as a starting point for the Slack answer — fill in the concrete data you pulled.
+  - Always end with a human tag (ESCALATION_SLACK_USER_ID) + call mcp__nelson__escalate_to_human for the destructive step.
+
+playbooks:
+
+  cancel_fennoa_invoice_draft:
+    recognize_phrases:
+      - delete a draft invoice
+      - cancel the Fennoa draft
+      - something's wrong with the invoice, let me redo it in Fennoa
+    nelson_reality: >-
+      Only CONSOLIDATED invoice drafts live locally in Nelson as a Payment row in DRAFT status.
+      Non-consolidated Fennoa invoices go directly to Fennoa — Nelson has no endpoint to delete them.
+    agent_does:
+      - GET /api/management/secure/reservations?code=<code> → uuid.
+      - GET /api/management/secure/payments?reservationUuid=<uuid> — look for a Payment in DRAFT status with consolidatedInvoiceRow set.
+      - If found → flag the Payment id + state, propose DELETE /api/management/secure/fennoa/sales-invoice/consolidated/{paymentId}. Escalate.
+      - If no draft found (i.e. it was a non-consolidated invoice) → reply that the user should delete/void it inside Fennoa's own UI; no Nelson action available.
+    do_not: [DELETE /api/management/secure/fennoa/sales-invoice/consolidated/{id}]
+    reply_template: >-
+      The "draft" status only exists for CONSOLIDATED Fennoa invoices — those live as a Payment row in Nelson
+      until submitted. Regular Fennoa invoices go straight to Fennoa and have to be cancelled/voided there.
+      <found-status-for-reservation>. <next-step-and-escalation-tag>.
+
+  change_member_email:
+    recognize_phrases:
+      - change the member's email
+      - update <old-email> to <new-email>
+      - move a member's account from one email to another
+    nelson_reality: PUT /api/management/secure/membership/update-email?originalEmail=<x>&newEmail=<y>. Writes to DB (email_real) AND Cognito user attribute. Cognito LOGIN USERNAME stays unchanged.
+    agent_does:
+      - Validate both addresses look well-formed.
+      - Pull the member's profile for context (CRM search or member endpoint).
+      - Escalate with the exact call + caveat about login username staying the same.
+    do_not: [PUT /api/management/secure/membership/update-email]
+
+  move_payment_between_reservations:
+    recognize_phrases:
+      - change the credit card payment from <resA> to <resB>
+      - transfer the payment on <resA> to <resB>
+      - move the card from one booking to another
+      - reassign this payment
+    nelson_reality: No direct API moves a payment between reservations. Workflow is refund-on-A + re-charge-on-B (or equivalent accounting adjustment via Fennoa credit + manual payment).
+    agent_does:
+      - Resolve both codes to uuids via GET /api/management/secure/reservations?code=<code> (per reservation).
+      - GET /api/management/secure/reservations/{uuidA} and {uuidB} — capture state, totalPrice, currency, customer email.
+      - GET /api/management/secure/payments?reservationUuid=<uuidA> — capture each payment's provider, status, amount, transaction_id.
+      - Post a summary to Slack; call mcp__nelson__escalate_to_human with a clear title.
+    do_not:
+      - Do NOT call POST /api/management/secure/payments/refund
+      - Do NOT call POST /api/management/secure/add-manual-payment
+      - Do NOT call any /api/management/secure/payments/* endpoint that writes.
+    reply_template: >-
+      Moving a card payment between reservations isn't a single step in Nelson — the
+      usual workflow is to refund on *<resA>* and re-charge *<resB>*. Here's the context:
+      *<resA>* (state <X>, total <Y> <CCY>): <paymentSummaryA>.
+      *<resB>* (state <X>, total <Y> <CCY>): <paymentSummaryB>.
+      Flagging <@escalation> to do the refund + recharge.
+
+  cancel_with_refund:
+    recognize_phrases:
+      - cancel this booking and refund
+      - full refund / partial refund for <res>
+      - please refund <res>
+    nelson_reality: Cancellation + refund is two operations (PUT cancel + POST refund). Refund amounts depend on cancellation policy; Nelson computes refundable amount server-side (see /api/payments/refund/calculate-refunded-amount).
+    agent_does:
+      - GET reservation + payments + activity log so the escalator has full picture.
+      - If the user named an amount, capture it but flag if it exceeds refundable amount (calculate-refunded-amount endpoint).
+      - Escalate — do NOT call any cancel/refund endpoint.
+    do_not: [PUT /api/reservations/{uuid}/cancel, POST /api/management/secure/payments/refund, DELETE .../cancel]
+
+  change_reservation_dates:
+    recognize_phrases:
+      - change dates on <res>
+      - move the booking
+      - extend the stay / shorten the stay
+    nelson_reality: Date change uses PUT /api/management/secure/reservations/{uuid}. Changes recompute price — may trigger refund or additional charge. ChangeType enum: [NO_CHANGE, MINOR_CHANGE, EXTEND, SHORTEN, MOVE]. See enums.yaml.
+    agent_does:
+      - GET reservation. Preview the new dates with POST /api/management/secure/reservation-preview.
+      - Show the price delta and ask the escalator to apply.
+    do_not: [PUT /api/management/secure/reservations/{uuid}]
+
+  merge_two_reservations:
+    recognize_phrases:
+      - combine these two bookings
+      - merge reservations <A> and <B>
+      - one guest, two bookings, please consolidate
+    nelson_reality: No direct merge. Usually the support team cancels one and extends/edits the other. If they're adjacent nights for the same guest+room, staff re-issue as a single booking.
+    agent_does:
+      - Pull both reservations + customer + stay dates. Flag conflicts (different guests, overlapping nights, different payment statuses).
+      - Escalate with the diff.
+
+  split_group_reservation:
+    recognize_phrases:
+      - split this group booking
+      - separate rooms from the group
+    nelson_reality: Group split requires canceling the group header and re-creating individual bookings; sometimes support uses reservation.type flip via PUT reservation. Complex — always escalate.
+    agent_does: [read-only inspection + escalate]
+
+  reassign_reservation_to_different_customer:
+    recognize_phrases:
+      - transfer this booking to a different guest
+      - change the customer on <res>
+    nelson_reality: PUT /api/management/secure/reservations/{uuid} with a new customer_id, if the customer already exists. Otherwise create the customer first. Touches CRM + loyalty.
+    agent_does: [read-only + escalate]
+    do_not: [PUT reservation]
+
+  resend_confirmation_or_reminder:
+    recognize_phrases:
+      - resend confirmation
+      - guest didn't get the email
+      - send reminder again
+    nelson_reality: Safe-ish operation. Endpoints: POST /api/management/secure/{uuid}/sendEmailCustomer, /sendReminderEmail, /sendWelcomeEmail. No money movement.
+    agent_does:
+      - Confirm the ask is NOT a money change (if it is, fall to another playbook).
+      - If it's just a resend, call the appropriate endpoint. No escalation needed unless the user explicitly asks.
+    classification: not_destructive
+
+  door_code_issue:
+    recognize_phrases:
+      - door code not working for <res>
+      - reset the lock / credential
+    nelson_reality: GET /api/management/secure/reservations/{uuid}/door-code/get is read-only. POST /api/management/secure/reservations/{uuid}/door-code/reset rotates the credential on the lock system — destructive (invalidates old codes).
+    agent_does:
+      - GET the current door code + lock-ui events: /api/management/secure/lock-ui/axis/credential/{label}/{token}/usages
+      - Escalate the reset — do NOT call the reset endpoint yourself.
+
+  guest_complaint_needs_compensation:
+    recognize_phrases:
+      - compensate the guest
+      - goodwill voucher / discount
+      - issue a refund for damage/complaint
+    nelson_reality: Compensations use the COMPENSATE product type or a monetary voucher. Refunds go through payments. Either way: money movement → escalate.
+    agent_does: [context-gather + escalate]
+
+classification:
+  destructive_patterns_default_to_escalate: true
+  never_attempt_write_without_explicit_user_greenlight: true
+
+add_a_new_playbook:
+  when: A customer-support request type repeats and the graph makes the agent reinvent the handling each time.
+  how: Copy an existing playbook's shape. Keep each under 25 lines. Always include: recognize_phrases, nelson_reality, agent_does, do_not, optional reply_template.

@@ -1,0 +1,29 @@
+schema: 1
+node: portals-and-routes
+purpose: The codebase serves two portals with different configs.
+
+admin_portal:
+  start_cmd: npm run start:admin
+  port: 4001
+  purpose: Cross-tenant administration — tenant management, user management, role assignment, deployment flags.
+  routes_hit:
+    - /api/tenant/*                 (via nelson-tenant-management-service)
+    - /api/user/*                   (via nelson-user-management-service)
+    - /api/management/secure/*      (Nelson core, admin actions)
+
+client_portal:
+  start_cmd: npm run start:client
+  port: 3000
+  purpose: Single-tenant ops view — reservations, pricing, availability, reports, rooms.
+  routes_hit:
+    - /api/management/secure/*      (Nelson core for the tenant)
+    - /api/hotels, /api/availability-check (public endpoints used by staff views too)
+
+per_client_customization:
+  source: nelson-client-configuration repo — bundled at build time via the CLIENT env.
+  typical_clients: omena, salora, admin, demo, exhibition
+  behavior_switch: feature-config.json toggles + hotel-config.json display strings.
+
+documentation:
+  additional: ../docs/tenant-api.md (MUI ↔ tenant-management-service contract)
+  code_patterns: ../docs/code-patterns.md (must-read before editing)

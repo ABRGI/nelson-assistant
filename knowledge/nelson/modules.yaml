@@ -1,0 +1,70 @@
+schema: 1
+node: modules
+purpose: Where code lives. Top-level Maven modules.
+related: [.claude/knowledge.yaml]
+
+build:
+  tool: maven (mvnw / mvnw.cmd wrappers)
+  parent_pom: parent/pom.xml
+  root_pom: pom.xml (aggregator)
+  docker_compose: docker-compose.yml
+  observer_env: observer.env          # sample env for observer/read-replica runs
+  m2_settings: m2_settings.xml
+
+modules:
+  nelson-web:
+    role: Spring Boot web tier. REST controllers + Thymeleaf views. Entry point.
+    entry: nelson-web/src/main/java (controllers live here by feature)
+  domain:
+    role: JPA/JDBC DTOs + enums + domain constants. Read FIRST when tracing an entity.
+  reservation-core:
+    role: Reservation service layer + state machine.
+  pricing-core:
+    role: Pricing rules, secif overrides, pet-friendly pricing.
+  storage-core:
+    role: JDBC DAO layer. Where SQL actually lives.
+  common-util:
+    role: Shared utilities (date/time, serialization, misc).
+  channelmanager-core:
+    role: Channel manager orchestration.
+  channelmanager-bookingcom:
+    role: Booking.com integration.
+  channelmanager-expedia-schemas:
+    role: Expedia XSD-derived schemas.
+  channelmanager-beonx:
+    role: BeonX revenue management connector.
+  channelmanager-ghc:
+    role: Google Hotel Center connector.
+  locking-core:
+    role: Door lock integrations (AXIS, AXBASE, SMARTKEY, VAKA, VANDERBILT).
+  blocking-core:
+    role: Customer blocking / security lists.
+  payment-core:
+    role: Paytrail v1/v2, Tyl, Fennoa invoicing, vouchers, gift cards.
+  hibox-api:
+    role: Hibox integration (in-room devices / TV).
+  tilastokeskus-api:
+    role: Finnish statistics bureau reporting.
+  customer-relationship-core:
+    role: CRM (customer card, blocking, search).
+  customer-login-core:
+    role: Guest / member login flows.
+  service-app-core:
+    role: Service-app backend (cleaners + managers).
+  message-event:
+    role: Event plumbing for async messages.
+  migration:
+    role: Legacy-import flows and data conversion.
+  user-historical-log:
+    role: Historical user activity logs.
+  nelson-nflow-test:
+    role: nFlow workflow tests.
+  saas-infra-test:
+    role: SaaS multi-tenant infra tests.
+
+migrations: migration/     # Flyway SQL files, 450+
+scripts: scripts/
+etc: etc/
+third_party_licenses: THIRD_PARTY_LICENSES.md
+
+conventions_reference: docs/01-architecture.md and docs/16-build-quirks.md

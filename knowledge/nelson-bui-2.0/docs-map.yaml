@@ -1,0 +1,43 @@
+schema: 1
+node: docs-map
+purpose: BUI 2.0 has a well-maintained docs/*.md set. This leaf points at the right doc for each concern so the agent doesn't re-discover.
+related: [.claude/knowledge/stack.yaml]
+
+docs:
+  - path: docs/00-overview.md
+    for: Project shape, module layout.
+  - path: docs/01-architecture.md
+    for: Routing, top-level layout, component boundaries.
+  - path: docs/02-state-management.md
+    for: Zustand stores, persistence, shared selectors.
+  - path: docs/03-booking-flow.md
+    for: Guest booking (search → select → confirm → pay).
+  - path: docs/04-manage-booking-flow.md
+    for: "My Booking" post-booking flow (view, cancel, change-date).
+  - path: docs/05-payments.md
+    for: Paytrail v1/v2, gift card, voucher, Netaxept wiring.
+  - path: docs/06-feature-flags.md
+    for: GlobalHotelConfig.feature.* + per-flag behavior (membership, eciLco, golf, etc.).
+  - path: docs/07-api-reference.md
+    for: Authoritative API reference — URL prefixes, `authApi.ts` endpoints, admin-gating rule.
+  - path: docs/08-security.md
+    for: Auth flow, token handling, CSRF/CSP notes.
+  - path: docs/09-testing.md
+    for: Vitest / Playwright setup + conventions.
+  - path: docs/10-environments.md
+    for: local / staging / prod + env variable mapping.
+  - path: docs/11-analytics.md
+    for: Tracking (The Hotel Network, GA, etc.)
+  - path: docs/12-validation.md
+    for: Form validation conventions.
+  - path: docs/13-hooks.md
+    for: React hook conventions used across the codebase.
+  - path: docs/common_bugs.md
+    for: Known bugs & gotchas.
+  - path: docs/update_history.md
+    for: Changelog-style recent changes.
+
+rule_for_agent: >-
+  If the question matches a topic above, read that single doc — not the whole
+  tree. Do NOT combine with docs from nelson/docs/ unless the question spans
+  both the booking UI and the backend.

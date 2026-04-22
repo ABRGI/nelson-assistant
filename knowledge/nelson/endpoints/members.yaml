@@ -1,0 +1,75 @@
+schema: 1
+node: endpoints/members
+purpose: Loyalty / membership flows — signup, login, profile, member bookings, account deletion.
+related: [.claude/knowledge/enums.yaml]
+
+note_for_assistant: Member-facing endpoints are rarely what hotel-ops staff ask about. Use only when the question is clearly about a loyalty member's account. Staff equivalents live under /api/management/secure/ and CRM search.
+
+public_membership:
+  sign_up:
+    method: POST
+    path: /api/membership/signUp
+    body: CognitoSignUpRequest
+    returns: String (uuid)
+  login:
+    method: POST
+    path: /api/membership/login
+    body: CognitoLoginRequest
+    returns: CognitoMembershipLoginResponse
+  create_password_get: GET /api/membership/{uuid}/createPassword
+  create_password_post: POST /api/membership/{uuid}/createPassword
+  refresh_token: POST /api/membership/{uuid}/refreshToken
+  forgot_password: POST /api/membership/forgotPassword
+  confirm_forgot_password: POST /api/membership/confirmForgotPassword
+
+member_secure_prefix: /api/membership/secure/{memberUuid}
+
+member_secure_endpoints:
+  token_check: GET /api/membership/secure/{uuid}/token-check
+  profile_read: GET /api/membership/secure/{uuid}/profile
+  profile_save: POST /api/membership/secure/{uuid}/profile
+  profile_save_with_lang: POST /api/membership/secure/{uuid}/profile/{lang}
+  manage_bookings_list: GET /api/membership/secure/{uuid}/manageBookings/{appType}
+  manage_bookings_one: GET /api/membership/secure/{uuid}/manageBookings/{appType}/{bookingUuid}
+  add_booking: POST /api/membership/secure/{uuid}/manageBookings/{appType}/add
+  contact_info: POST /api/membership/secure/{uuid}/contactInfo/{reservationUuid}
+  reservations_list: GET /api/membership/secure/{uuid}/reservations
+  reservation_one: GET /api/membership/secure/{uuid}/reservations/{resUuid}
+  cancel_reservation:
+    method: PUT
+    path: /api/membership/secure/{uuid}/reservations/{resUuid}/cancel
+    destructive: true
+  cancel_change: PUT /api/membership/secure/{uuid}/reservations/{resUuid}/cancel-change
+  netaxept_methods: GET /api/membership/secure/{uuid}/payment/netaxept/methods
+  netaxept_init: POST /api/membership/secure/{uuid}/payment/netaxept/easyPayment/initialize
+  netaxept_add_card_init: POST /api/membership/secure/{uuid}/payment/netaxept/easyPayment/addCard/initialize
+  netaxept_remove_card: POST /api/membership/secure/{uuid}/payment/netaxept/easyPayment/removeCard
+  room_door_dependency_list: POST /api/membership/secure/{uuid}/roomDoorDependencyList
+
+member_account_destructive:
+  delete:
+    method: DELETE
+    path: /api/membership/secure/{uuid}/account
+    destructive: true
+  request_deletion:
+    method: DELETE
+    path: /api/membership/secure/{uuid}/account-deletion
+    destructive: true
+
+staff_member_ops_destructive:
+  # Staff-side control over a member account, under /api/management/secure.
+  delete_membership:
+    method: DELETE
+    path: /api/management/secure/membership/delete
+    query: { email }
+    destructive: true
+  update_email:
+    method: PUT
+    path: /api/management/secure/membership/update-email
+    query: { originalEmail, newEmail }
+    destructive: true
+    note: Updates email_real in DB + email attribute in Cognito; login username unchanged.
+  set_member_password:
+    method: PUT
+    path: /api/management/secure/set-member-password
+    destructive: true

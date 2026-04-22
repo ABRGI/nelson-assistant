@@ -1,0 +1,26 @@
+schema: 1
+node: endpoints
+purpose: HTTP surface — three routes, all behind API Gateway + Lambda.
+related: [.claude/knowledge/data.yaml]
+
+base_url: https://admin.nelson.management (example — path routing may differ per deploy)
+
+list_tenants:
+  method: GET
+  path: /api/tenant/listtenants
+  returns: List<Tenant> — from nelson-tenants DynamoDB table
+  lambda: lambda_src/listtenants.js
+
+get_tenant_props:
+  method: GET
+  path: /api/tenant/:tenantname/:environmentname
+  returns: Tenant + environment properties; may merge in JSON from S3 (nelson-tenant-properties)
+  lambda: lambda_src/managetenantprops.js
+
+set_tenant_props:
+  method: POST
+  path: /api/tenant/:tenantname/:environmentname
+  destructive: true
+  body: arbitrary JSON — replaces the tenant environment properties document.
+  lambda: lambda_src/managetenantprops.js
+  note: Writes to DynamoDB + S3. Admin-only in prod; gated by API Gateway auth.

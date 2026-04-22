@@ -1,0 +1,62 @@
+schema: 1
+node: content-files
+purpose: Map content-type → exact file + JSON structure. Used when a support request says "change this text for this hotel".
+related: [.claude/knowledge/layout.yaml]
+
+# The most common change path in customer-support flow.
+
+breakfast_descriptions:
+  file: src/config/omena/breakfast-description.json
+  shape: |
+    {
+      "<HOTEL_LABEL>": {
+        "breakfast": {
+          "en": "Mon-Fri ... Sat ... Sun ... (English copy)",
+          "fi": "ma-pe ... la ... su ... (Finnish copy)"
+        }
+      },
+      ...
+    }
+  keys_example: [HKI2, HKI3, JYL1, POR2, TKU1, TKU2, TRE2, VSA2, HAN1, JOE1]
+  locale_handling: only en + fi present — BUI falls back per its i18n config for sv/ru/et.
+
+hotel_config:
+  file: src/config/<client>/hotel-config.json
+  purpose: Chain-level hotel display config (visible on booking page). Fields vary per client.
+
+mui_config:
+  file: src/config/<client>/mui-config.json
+  purpose: MUI (management UI) config — feature toggles, integrations visible/hidden.
+
+feature_config:
+  file: src/config/<client>/feature-config.json
+  purpose: High-level feature flags read at BUI + MUI boot.
+
+branding_assets:
+  files:
+    - src/config/<client>/assets/<logo>.svg / png
+    - src/config/<client>/assets/<font>.woff / ttf / eot
+  note: Logo / fonts / color swatches.
+
+custom_css:
+  file: src/config/<client>/custom-style.css
+  purpose: Per-client CSS overrides applied on top of the BUI/MUI base theme.
+
+ui_i18n_strings_shared:
+  dir: src/language/
+  purpose: Shared translation bundles across clients. Managed via i18n-ally extension.
+  note: Long-form per-hotel descriptions live in the client folder, NOT here.
+
+support_request_examples:
+  change_breakfast_times_joensuu:
+    target_file: src/config/omena/breakfast-description.json
+    target_key: "JOE1.breakfast.{en,fi}"
+    how: Update both locales; keep trailing newlines / formatting consistent with siblings.
+
+  change_feature_flag:
+    target_file: src/config/<client>/feature-config.json
+    how: Toggle boolean + commit + PR.
+
+  swap_client_logo:
+    target_file: src/config/<client>/assets/<new-logo>
+    how: Drop file + update any referencing JSON (hotel-config.json or mui-config.json).

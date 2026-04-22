@@ -1,0 +1,79 @@
+schema: 1
+node: endpoints/channels
+purpose: Channel manager (Booking.com, Expedia, BeonX, GHC), OTA webhooks, failed events.
+related: [.claude/knowledge/enums.yaml, .claude/knowledge/security-prefixes.yaml]
+
+channel_ops:
+  save: POST /api/management/secure/channel/save
+  set_availability_threshold: POST /api/management/secure/channel/availability-threshold
+  per_hotel_stat: GET /api/management/secure/channel/hotels/{id}/availability-stat
+
+ota_failed_reservations:
+  list: GET /api/management/secure/ota-failed-reservation/events
+  resolve:
+    method: POST
+    path: /api/management/secure/ota-failed-reservation/resolve-events/{id}
+    destructive: true
+
+beonx:
+  # Legacy MUI-facing endpoints (manual operator flows)
+  xml_data: GET /api/management/secure/beonx/xml-data
+  download_files: GET /api/management/secure/beonx/xml-data/download-files
+  send:
+    method: POST
+    path: /api/management/secure/beonx/xml-data/send
+    destructive: true
+
+  # BeonX XML archive — searchable history of every XML push (BeonxXmlArchiveController)
+  xml_logs_search:
+    method: GET
+    path: /api/beonx/xml-logs
+    query:
+      hotelLabel: optional
+      reservationCode: optional
+      xmlType: optional
+      success: optional (boolean)
+      startDate: optional (ISO 8601 instant)
+      endDate: optional (ISO 8601 instant)
+      limit: default 50
+      offset: default 0
+    returns: List<BeonxXmlLog> — fields: id, reservation_code, allotment_code, hotel_label, xml_type, s3_file_path, sent_date, success, error_message, metadata, retry_count, created, modified
+    note: >-
+      Results sorted newest-first by default (service layer). For "last push" use limit=1
+      without filters. For "last push per hotel" prefer psql DISTINCT ON (see db/queries.yaml).
+  xml_logs_count:
+    method: GET
+    path: /api/beonx/xml-logs/count
+    query: (same filters as search)
+    returns: Long
+  xml_logs_by_reservation:
+    method: GET
+    path: /api/beonx/xml-logs/reservation/{reservationCode}
+    returns: List<BeonxXmlLog>
+
+beonx_tables_reference:
+  - beonx_xml_log           # push history — see db/schema.yaml
+  - beonx_webhook_msg_logs  # inbound BeonX webhook messages
+  - beonx_hotel_mapping     # Nelson hotel_id ↔ beonx_hotel_id; activated flag per mapping
+
+external_inbound_webhooks:
+  # These are CALLED BY external systems, not by the assistant. Do not invoke.
+  availability_callback: POST /api/external/availability
+  hibox_status: POST /api/external/hibox-status
+  generic_webhook: GET /api/webhook/{provider}
+  rule: Assistant MUST NOT invoke /api/external/* or /api/webhook/*. Escalate if a user asks.
+
+bulk_ops_via_secretkey:
+  note: These are operational re-pushes. /api prefix but secretKey-protected. Assistant must NEVER call.
+  init_available_date: POST /api/initAvailableDate
+  init_beyond_horizon_avail: POST /api/initBeyondHorizonAvail
+  init_price_date: POST /api/initPriceDate
+  init_eci_lco_date: POST /api/initEciLcoDate
+
+channel_numeric_ids:
+  BOOKINGCOM: 1
+  EXPEDIA: 2
+  SOLINOR: 3
+  GOOGLE_HOTEL_CENTER: 4
+
+event_cleanup_days: 30

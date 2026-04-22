@@ -1,0 +1,41 @@
+schema: 1
+node: cognito
+purpose: Cognito pool + DynamoDB user table wiring.
+related: [.claude/knowledge/flow.yaml, .claude/knowledge/deploys.yaml]
+
+cognito_pool:
+  region: eu-central-1
+  example_pool_id_staging: eu-central-1_FpDokBIgN       # from package.json local script
+  example_client_id_staging: 3ug367r4eg480cboidfsdf8t9j
+  login_url_staging: https://nelsonmanagementlogin.auth.eu-central-1.amazoncognito.com
+  client_secret_source: AWS Secrets Manager (SECRET_NAME env var, e.g. Prod_nelson-users_nelsonmanagement_secret)
+
+secret_hash:
+  purpose: Cognito requires SECRET_HASH for app clients with a secret. This service computes it on every auth call.
+  formula: HMAC-SHA256(key = app_client_secret, message = username + app_client_id) → base64
+  notes: username for password login = email; for refresh login = Cognito sub.
+
+dynamodb:
+  user_table:
+    env: USER_TABLE (example: nelson-user-management-users)
+    purpose: Mirrors minimal user data (sub, email, display name, roles). Full identity is still in Cognito.
+  access_roles_table:
+    env: ACCESS_ROLES_TABLE (example: user-management-access-roles)
+    purpose: Maps roles → permissions (used by MUI to gate UI features).
+
+pre_token_generator_hook:
+  file: lambda_src/preauthtokengenerator.js
+  runs_on: EVERY Cognito login + refresh
+  injects:
+    - environmentids      # which Nelson environments (tenants) this user can access
+    - roles               # user roles (NELSON_MANAGER, CLIENT_ADMIN, etc.)
+  consumers: nelson (backend RBAC), nelson-management-ui (UI gating), nelson-assistant (V2 tenant routing from JWT claims).
+
+user_attributes_of_interest:
+  - sub               # Cognito uuid; primary key
+  - email
+  - email_verified
+  - given_name
+  - family_name
+  - custom:roles      # CSV of roles
+  - custom:environmentids  # CSV of environment UUIDs (tenants the user can touch)

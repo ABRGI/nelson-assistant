@@ -1,0 +1,33 @@
+schema: 1
+node: deploys
+purpose: How this service is deployed + how to run it locally.
+
+prod_shape:
+  lambdas: One Lambda per file in lambda_src/ (userlogin.js, listusers.js, etc.).
+  fronted_by: API Gateway (custom domain: admin.nelson.management for prod).
+  ci: /aws/codebuild/ProdUserManagementService log group.
+  staging_ci: /aws/codebuild/TestUserManagementService.
+  dynamodb: USER_TABLE + ACCESS_ROLES_TABLE (see cognito.yaml).
+  secret: SECRET_NAME (Cognito app client secret).
+
+local_dev:
+  # Package.json scripts:
+  remote: npx nodemon index_remote.js   # proxies /api/user/* to http://test.nelson.management
+  local: |
+    LOCAL=true COGNITO_LOGIN_URL=https://nelsonmanagementlogin.auth.eu-central-1.amazoncognito.com \
+    ENV_REGION=eu-central-1 SECRET_NAME=Prod_nelson-users_nelsonmanagement_secret \
+    USERPOOL_CLIENT_ID=3ug367r4eg480cboidfsdf8t9j USERPOOL_ID=eu-central-1_FpDokBIgN \
+    TEMP_PASSWORD=Welcome@Nelson123 USER_TABLE=nelson-user-management-users \
+    ACCESS_ROLES_TABLE=user-management-access-roles \
+    npx nodemon index_local.js
+
+env_vars:
+  ENV_REGION: AWS region (eu-central-1)
+  COGNITO_LOGIN_URL: Cognito hosted UI URL
+  USERPOOL_ID: Cognito user pool id
+  USERPOOL_CLIENT_ID: Cognito app client id
+  SECRET_NAME: Secrets Manager entry holding the app client secret
+  USER_TABLE: DynamoDB table for user mirror data
+  ACCESS_ROLES_TABLE: DynamoDB table for roles
+  TEMP_PASSWORD: Default temporary password for admin-created users
+  LOCAL: "true" to use local AWS credentials (ACCESSKEY/SECRETKEY) instead of the Lambda execution role

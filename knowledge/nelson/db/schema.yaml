@@ -1,0 +1,165 @@
+schema: 1
+node: db/schema
+purpose: Per-table column cheat sheet. Essentials only — full detail in docs/10-database.md.
+related: [.claude/knowledge/db.yaml, .claude/knowledge/db/relations.yaml]
+
+engine: PostgreSQL
+locale: fi_FI.UTF-8
+migrations: Flyway, 450+ total. Never edit old ones; always add new.
+
+# Format: table: {pk, fks, columns: [key columns], notes}
+
+tables:
+
+  hotel_chain:
+    pk: id (bigint)
+    columns: [id, name]
+    notes: Brand grouping (OMENAHOTELS, SALOHOTELS, USHOTELS, ECHOTELS).
+
+  hotel:
+    pk: id (bigint)
+    fks: [hotel_chain_id → hotel_chain.id]
+    columns: [id, hotel_chain_id, label (UK), name, street_address, postal_code, city, country, currency, check_in_time, check_out_time, time_zone, restaurant_email, available, latitude, longitude, cleaning_mobile, sdate, edate, opened, closed, numberdayload, tenant_hotel_id]
+    notes: label is the short code (e.g. HKI2). Multi-tenancy key is tenant_hotel_id. Use for hotel metadata.
+
+  hotel_info:
+    fks: [hotel_id → hotel.id]
+    columns: [hotel_id, attribute_name, value]
+    notes: Key/value attribute bag per hotel.
+
+  merchant:
+    pk: id
+    columns: [id, name]
+
+  hotel_ownership:
+    fks: [hotel_id → hotel.id, merchant_id → merchant.id]
+    columns: [hotel_id, merchant_id, valid_from, valid_until]
+
+  room:
+    pk: id (bigint)
+    fks: [hotel_id → hotel.id, product_id → product.id]
+    columns: [id, hotel_id, product_id, label, clean, habitable, for_disabled, available, prefer_until_day_of_year, specific_info, lock_system, old_lock_system, is_de_prioritized, min_capacity]
+    notes: label is the room number. clean + habitable are booleans, authoritative for current status. lock_system is an enum (AXIS, AXBASE, SMARTKEY, VAKA, VANDERBILT).
+
+  product:
+    pk: id
+    fks: [hotel_id → hotel.id]
+    columns: [id, hotel_id, product_type, name, vat_percentage]
+    notes: product_type enum covers ACCOMMODATION, BREAKFAST, ECI, LCO, etc. (see enums.yaml).
+
+  reservation:
+    pk: id (bigint)
+    unique: uuid (varchar 36)
+    fks: [hotel_id → hotel.id, customer_id → customer.id (nullable)]
+    columns: [id, uuid, code, hotel_id, state, type, channel, start_date, end_date, adults, children, total_price, currency, customer_id, created_ts, updated_ts]
+    notes: uuid is the external primary key exposed in URLs. code is the short human-visible reference. state is ReservationState enum; channel is BookingChannel; type is ReservationType (numeric 1/2/3).
+
+  reservation_product:
+    fks: [reservation_id → reservation.id, product_id → product.id, room_id → room.id (nullable)]
+    columns: [reservation_id, product_id, room_id, date, price, currency]
+    notes: Per-night / per-day product rows per reservation (ACCOMMODATION, BREAKFAST, ECI, LCO, etc.).
+
+  line_item:
+    pk: id
+    fks:
+      - reservation_id → reservation.id
+      - product_order_id → product_order.id (nullable)
+      - product_id → product.id
+      - voucher_id → discount_voucher.id (nullable)
+    columns:
+      - id
+      - reservation_id
+      - product_order_id
+      - product_id
+      - service_date          # when the service was consumed (a night, a breakfast, etc.)
+      - invoice_date          # when the revenue is attributed (the metric's date anchor)
+      - voucher_id
+      - price                 # numeric (gross; use net_price(price, vat_percentage) for net)
+      - currency              # varchar(3)
+      - vat_percentage        # numeric
+      - list_price            # numeric
+      - refundable            # boolean
+      - created
+      - confirmed             # timestamp — null until booking is confirmed
+      - to_be_cancelled       # timestamp — soft-cancel flag (pending)
+      - cancelled             # timestamp — hard-cancel
+    notes: >-
+      The FACT TABLE for revenue/KPIs. ADR, RevPAR, Occupancy, Revenue and New Sales all derive
+      from this table. Filter: `confirmed IS NOT NULL AND ((cancelled IS NULL AND to_be_cancelled IS NULL) OR refundable IS FALSE)`
+      per Nelson's report conventions. Product filter for accommodation metrics: p.type IN ('ACCOMMODATION','EXTRA_BED').
+      Date field for stay-based metrics: invoice_date. Date field for booking-date metrics (New Sales): confirmed::date.
+
+  product_order:
+    pk: id
+    fks: [reservation_id → reservation.id, product_id → product.id, room_id → room.id (nullable)]
+    columns: [id, reservation_id, product_id, room_id, ...]
+    notes: Parent record for a reservation's product request. Line items hang off this via product_order_id.
+
+  discount_voucher:
+    pk: id
+    columns: [id, code, category, type, amount, used, valid_from, valid_until, allotment_id]
+    notes: Same as `voucher` elsewhere in this schema — there are two related tables (discount_voucher + monetary_voucher). Prefer discount_voucher for percent-off and allotment linkage.
+
+  customer:
+    pk: id
+    columns: [id, email, first_name, last_name, phone, country, language, member_id]
+    notes: pg_trgm index on name fields for fuzzy search.
+
+  payment:
+    pk: id
+    fks: [reservation_id → reservation.id]
+    columns: [id, reservation_id, provider, status, amount, currency, transaction_id, created_ts]
+    notes: provider is PaymentProvider enum; status is PaymentStatus enum.
+
+  voucher:
+    pk: id
+    columns: [id, code, category, type, amount, used, valid_from, valid_until, allotment_id (nullable)]
+    notes: type in (discount, monetary). category is VoucherCategory enum. Optional allotment link.
+
+  allotment:
+    pk: id
+    columns: [id, name, type]
+    notes: type in (SOFT, HARD).
+
+  hotel_allotment:
+    fks: [allotment_id → allotment.id, hotel_id → hotel.id]
+    columns: [id, allotment_id, hotel_id, valid_from, valid_until]
+
+  hotel_allotment_date:
+    fks: [hotel_allotment_id → hotel_allotment.id]
+    columns: [hotel_allotment_id, date, count]
+
+  channel_event:
+    pk: id
+    columns: [id, type, status, created_ts, payload]
+    notes: Async coordination for OTA ops. Cleaned up after 30 days. type/status enums in enums.yaml.
+
+  user_activity_log:
+    columns: [id, user_id, reservation_code, action, ts, metadata]
+    notes: Audit log for staff actions.
+
+  room_clean_event:
+    fks: [room_id → room.id]
+    columns: [id, room_id, clean_type, clean_ts, comment, source]
+    notes: Event-sourced clean history. source is EventSource_for_clean enum.
+
+  app_config:
+    pk: id
+    columns: [id, key, value, data_type]
+    notes: Dynamic config (CHECK_PAYMENT_AFTER, HOTELS_ENABLE_GOLF, etc.). data_type in (STRING, INT, STRING_LIST).
+
+  member:
+    pk: id
+    columns: [id, uuid, membership_number, email, first_name, last_name, status, created_ts]
+    notes: Loyalty members. uuid for API access; membership_number is 12-char unique.
+
+  maintenance_reservation:
+    columns: [id, hotel_id, room_id, category_id, start_ts, end_ts, created_by, comment]
+    notes: Blocks a room for maintenance; triggers BLOCKED reservation.
+
+  maintenance_reservation_category:
+    pk: id
+    columns: [id, hotel_id, name]
+    notes: Per-hotel configurable categories.
+
+full_reference: docs/10-database.md (1012 lines; tables not listed here are there).

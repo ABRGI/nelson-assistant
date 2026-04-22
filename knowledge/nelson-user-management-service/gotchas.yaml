@@ -1,0 +1,26 @@
+schema: 1
+node: gotchas
+purpose: Things that have bitten us when debugging auth.
+
+username_differs_between_branches:
+  rule: password-login uses EMAIL as username; refresh-token exchange uses Cognito SUB as username.
+  symptom: 400/401 on refresh branch when caller sends the email instead of the sub.
+  mitigation: On first login, save the sub from the IdToken payload. Subsequent refresh calls use the sub.
+
+refresh_token_not_rotated:
+  behavior: REFRESH_TOKEN_AUTH returns a new IdToken but does NOT issue a new RefreshToken.
+  implication: Cache the RefreshToken once; don't expect to see it in every login response.
+
+secret_hash_required:
+  symptom: NotAuthorizedException / "Client is configured with secret but no SECRET_HASH provided".
+  cause: The Cognito app client has a secret, so every auth call MUST include SECRET_HASH.
+  fix: Already handled inside this service. External callers won't need to compute it — they should hit this service, not Cognito directly.
+
+pre_token_generator_failures:
+  symptom: Login returns IdToken with missing `environmentids` or `roles` claim.
+  cause: preauthtokengenerator.js errored silently on the Cognito hook.
+  fix: Check CloudWatch logs for the pre-token-generator Lambda in the relevant env.
+
+admin_create_vs_signup:
+  rule: Nelson staff users are created via admin flow (POST /api/user/user with admin token) — Cognito sends an invite email with a temp password; user must confirm before first real use.
+  not_to_be_confused_with: Member signup (that lives in the Nelson `nelson` repo under /api/membership/signUp, different Cognito pool).

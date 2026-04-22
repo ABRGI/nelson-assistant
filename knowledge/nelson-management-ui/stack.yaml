@@ -1,0 +1,33 @@
+schema: 1
+node: stack
+language: typescript
+framework: Angular 20
+node_version: 18.19 - 20.x
+build_tool: Angular CLI (ng)
+deps_highlights:
+  - '@angular/core @^20.3.10 (+ the full Angular suite)'
+  - '@angular/animations, @angular/forms, @angular/platform-browser'
+  - Bootstrap-style layout + custom SASS variables (src/assets/sass/_variables.sass)
+  - FontAwesome (pro icons)
+  - license-checker (for THIRD_PARTY_LICENSES.md generation)
+
+entry_points:
+  main: src/main.ts
+  types: src/app/@types/*.ts       # typed DTOs — hotel, allotment, admin-portal, translations, etc.
+  helpers_constants: src/app/helpers/constants.ts    # API_MANAGEMENT_SECURE + other URL prefixes
+  services: src/app/services/*.ts  # HTTP + state services
+  components: src/app/components/  # feature UI
+  routing: src/app/app-routing.module.ts (or similar)
+
+sass_variables: src/assets/sass/_variables.sass
+  # $primary-red #D4212A, $primary-green #285557, $primary-blue #4EC2DF, etc.
+  # See ../docs/code-patterns.md for the full swatch.
+
+scripts:
+  start_admin: ng serve --configuration admin         # localhost:4001
+  start_client: ng serve --configuration client       # localhost:3000
+  start_adminlocal / clientlocal: admin/client with proxy to local Nelson backend
+  build: ng build
+  license_gen: license-checker ... (runs on release)
+
+conventions_reference: docs/code-patterns.md in this repo (important — read before editing).

@@ -1,0 +1,84 @@
+schema: 1
+node: response-shapes
+purpose: Authoritative JSON shapes for the endpoints the agent most often calls. Saves the "call it, read JSON, guess field names" step.
+related: [.claude/knowledge/endpoints/pricing.yaml, .claude/knowledge/endpoints/availability.yaml, .claude/knowledge/tasks.yaml]
+
+# Field names below come from the Java model classes (nelson/nelson-web/src/main/java/nelson/api/model/booking/*.java).
+# Only the fields useful for hotel-ops answers are listed — pick by intent.
+
+RoomPrice:
+  returned_by: [GET /api/prices/{label}/..., GET /api/management/secure/prices/{label}/..., GET /api/prices_for_google, GET /api/m_app/prices/...]
+  semantics: ONE suggested price for the requested (rooms/adults/children) combo — NOT a per-room-type breakdown. Nelson auto-picks the best-fit room.
+  shape:
+    nelsonPriceList: array of NelsonPrice   # usually length 1
+  java: nelson-web/src/main/java/nelson/api/model/booking/RoomPrice.java
+
+NelsonPrice:
+  shape:
+    hotelLabel: string                       # echoes the hotel's label, e.g. "HKI2"
+    numberOfBookingsMadeDuringLast12Hours: int
+    selectedDateRangePrices: array of DateRangePrice   # one entry per night in the range
+  java: nelson-web/src/main/java/nelson/api/model/booking/NelsonPrice.java
+
+DateRangePrice:
+  shape:
+    date: string (yyyy-MM-dd formatted per website locale)
+    pricePerDate: double                     # final price for this night in the hotel's currency
+    priceBeforeAppliedVoucher: double
+    discountAmount: double
+    soldOut: boolean                         # true when numberOfAvailableRooms = 0
+    latestSoldPrice: double
+    numberOfAvailableRooms: int
+    numberOfAvailableDiscountedRooms: int
+    discountVoucherCodeValidity: string      # null when no voucher applied
+  java: nelson-web/src/main/java/nelson/api/model/booking/DateRangePrice.java
+  pick_for:
+    total_for_stay: sum pricePerDate over selectedDateRangePrices
+    nightly_rate: pricePerDate on the matching date entry
+    available_rooms: numberOfAvailableRooms on the date entry
+
+ProductOffer:
+  returned_by: [POST /api/availability-check (inside AvailabilityInfo), POST /api/management/secure/availability-check (inside AvailabilityInfoForAdmin)]
+  semantics: ONE entry per room type / product. Use this when the user asks about a specific room type or wants to see all options.
+  shape:
+    productId: long
+    title: string
+    description: string
+    image: string
+    bedArrangement: string
+    roomType: RoomType enum                  # STANDARD, SUITE, SUPERIOR, SINGLE, ... (see enums.yaml)
+    maxGuestCount: int
+    maxExtraBeds: int
+    availableRoom: int
+    availablePetFriendlyRooms: int
+    availabilityByMinCapacity: array of MinCapacityAvailability
+    availableRoomDetails: array of RoomTimeline   # admin only
+    notAvailableOn: array of date
+    roomAmenities: array of string
+    roomImages: array of string
+    currentPrices: map<date,Price>           # per-day price for this product
+    price: MonetaryAmount                    # total across the stay (all nights)
+    memberPrice: MonetaryAmount              # loyalty member total
+    additionalProducts: array of AdditionalProduct
+  java: nelson-web/src/main/java/nelson/api/model/booking/ProductOffer.java
+  pick_for:
+    price_for_room_type: filter by roomType, read price (total) or currentPrices[date] (per night)
+    availability_for_room_type: filter by roomType, read availableRoom
+
+MinCapacityAvailability:
+  shape:
+    minCapacity: int
+    availableRooms: int
+    availablePetFriendlyRooms: int
+  appears_in: [BriefOfAvailability.availabilityByMinCapacity, ProductOffer.availabilityByMinCapacity]
+  java: domain/src/main/java/nelson/domain/availability/
+
+MonetaryAmount:
+  note: Serialises as { amount: number, currency: { currencyCode: "EUR" } } via javax.money (Moneta). When reading the agent should prefer amount + currency.currencyCode.
+
+Price:
+  note: Nelson-internal wrapper around MonetaryAmount. In Map<date, Price> responses the serialized shape is equivalent to MonetaryAmount.
+
+how_to_add_a_shape:
+  when: The agent calls an endpoint, inspects the JSON, then has to guess field names. That's a sign this leaf should grow.
+  how: Look up the Java model class in nelson-web/src/main/java/nelson/api/model/. Copy only the fields that answer common hotel-ops questions. Keep under 20 fields per type — if more, link to the Java source.

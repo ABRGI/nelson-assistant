@@ -1,0 +1,26 @@
+schema: 1
+node: deploys
+purpose: Build + deploy.
+
+build:
+  tool: Angular CLI
+  cmd: ng build
+  artifacts: dist/ (per configuration: admin / client / clientlocal / adminlocal)
+
+release:
+  scripts: scripts/build.sh, scripts/release.sh
+  ci:
+    - /aws/codebuild/Test-nelson-management-ui
+    - /aws/codebuild/prod-omena-nelson-management-ui
+    - /aws/codebuild/prod-salo-nelson-management-ui
+    - /aws/codebuild/stg-omena-nelson-management-ui, stg-salo-nelson-management-ui
+    - /aws/codebuild/demo-nelson-management-ui
+  hosting: S3 + CloudFront (typical for Angular SPA deploys).
+
+configurations:
+  admin: cross-tenant admin portal (port 4001 in dev)
+  client: tenant-specific MUI (port 3000 in dev)
+  clientlocal / adminlocal: same as above but proxies to a local Nelson backend
+
+env_injection:
+  how: Angular `environment.ts` variants + build-time substitution by client config bundle (from nelson-client-configuration).

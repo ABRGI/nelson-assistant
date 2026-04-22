@@ -1,0 +1,30 @@
+schema: 1
+node: envs-and-build
+purpose: Environment matrix + build / run commands (inherited from README).
+
+axes:
+  ENV: [local, local2, prod, test]
+  ENVTYPE: [production, staging, all, local]   # refines prod or local pointing
+  CLIENT: [omena, salora]
+
+run_recipes:
+  prod_production:
+    - flutter build apk --release --dart-define=ENV=prod --dart-define=ENVTYPE=production
+    - flutter build appbundle --release --dart-define=ENV=prod --dart-define=ENVTYPE=production
+    - flutter build ios --release --dart-define=ENV=prod --dart-define=ENVTYPE=production
+  prod_all:
+    - flutter build apk --release --dart-define=ENV=prod --dart-define=ENVTYPE=all
+    - flutter build appbundle --release --dart-define=ENV=prod --dart-define=ENVTYPE=all
+    - flutter build ios --release --dart-define=ENV=prod --dart-define=ENVTYPE=all
+  prod_staging:
+    - flutter run -v --dart-define=ENV=prod --dart-define=ENVTYPE=staging
+    - flutter build apk --release --dart-define=ENV=prod --dart-define=ENVTYPE=staging
+    - flutter build appbundle --release --dart-define=ENV=prod --dart-define=ENVTYPE=staging
+    - flutter build ios --release --dart-define=ENV=prod --dart-define=ENVTYPE=staging
+  local:
+    - flutter run --dart-define=ENV=local
+    - flutter run --dart-define=ENV=local2
+  per_client_production:
+    - flutter run --dart-define=CLIENT=omena --dart-define=ENV=production
+    - flutter build appbundle --dart-define=CLIENT=omena --dart-define=ENV=production
+    - flutter build ios --release --dart-define=CLIENT=omena --dart-define=ENV=production

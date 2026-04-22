@@ -1,0 +1,24 @@
+schema: 1
+node: dev-and-deploy
+purpose: Local preview + deploy flow.
+
+prereqs:
+  node: 14+
+  fontawesome_pro: SVGs from FontAwesome download → copy into serve/icon/
+
+local_preview:
+  export_configs: npm run export [<client>]      # bundle the chosen client config
+  start_client: npm run start <client> <port>    # e.g. npm run start omena 3100
+  start_admin: npm run start admin 3101
+  start_icon: npm run start icon 3200
+  typical_setup_for_bui_mui: run client (3100) + admin (3101) + icon (3200). BUI / MUI proxies must match these ports.
+
+data_sources_at_export_time:
+  google_sheets: googleapis + google-spreadsheet + google-auth-library — export scripts can pull translations / config from Google Sheets.
+
+deploy:
+  branches:
+    develop: active integration branch (target for PRs)
+    master: production source
+  pipeline: /aws/codebuild/demo-nelson-deployment, prod-omena-nelson-deployment, etc. The deployment CodeBuild bundles this repo's configs into the BUI/MUI artifacts.
+  release_cadence: piggy-backs on BUI/MUI deploys — a content-only change lands via the next BUI or MUI deploy cycle.

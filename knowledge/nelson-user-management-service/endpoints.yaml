@@ -1,0 +1,73 @@
+schema: 1
+node: endpoints
+purpose: HTTP surface exposed by this service. Sourced from index_local.js + the lambda_src/ entry points.
+related: [.claude/knowledge/flow.yaml, .claude/knowledge/cognito.yaml]
+
+base_urls:
+  prod: https://admin.nelson.management
+  staging: http://test.nelson.management   # index_remote.js proxies here
+
+public:
+  login:
+    method: POST
+    path: /api/user/login
+    body_branch_password: { username (email), password, returnaccesstoken? (default false) }
+    body_branch_refresh: { username (Cognito sub), refreshtoken, returnaccesstoken? }
+    returns: { IdToken, AccessToken?, RefreshToken? }   # RefreshToken NOT returned on refresh branch
+    used_by_nelson_assistant: YES (refresh branch only)
+  logout:
+    method: POST
+    path: /api/user/logout
+    note: No-op server-side; client discards tokens.
+
+password_reset:
+  forgot:
+    method: POST
+    path: /api/user/forgotpassword
+    body: { username (email) }
+  confirm_forgot:
+    method: POST
+    path: /api/user/confirmforgotpassword
+    body: { username, code, newPassword }
+
+authenticated_user:
+  change_own_password:
+    method: POST
+    path: /api/user/changeuserpassword
+    auth: AccessToken required
+    destructive: true
+
+admin_endpoints_destructive:
+  create_user:
+    method: POST
+    path: /api/user/user
+    destructive: true
+  confirm_user:
+    method: POST
+    path: /api/user/confirmuser
+    destructive: true
+  reset_password:
+    method: POST
+    path: /api/user/resetpassword
+    destructive: true
+
+reads:
+  get_user_detail:
+    method: GET
+    path: /api/user/user
+    query: { username or email }
+  list_users:
+    method: GET
+    path: /api/user/listusers
+    query: { limit?, paginationToken?, filter? }
+  list_roles:
+    method: GET
+    path: /api/user/roles
+
+helper:
+  site_host:
+    method: GET
+    path: /api/management/secure/site-host
+    note: Exposed here in local mode; usually served by the core Nelson service.
+
+local_dev_proxy: index_remote.js proxies /api/user/* paths to http://test.nelson.management (useful when running MUI against a real remote env without redeploying lambdas).

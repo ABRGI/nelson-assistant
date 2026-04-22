@@ -1,0 +1,35 @@
+schema: 1
+node: layout
+purpose: Directory shape — which client owns which files.
+
+top_level:
+  src/config/<client>/: per-client config bundle
+  src/language/: shared translations (managed with i18n-ally VS Code extension)
+  public/: static assets
+  serve/icon/: FontAwesome Pro SVG drop (copy from FontAwesome download, see README)
+
+clients:
+  admin:      MUI admin portal (cross-client)
+  demo:       Demo deployment
+  omena:      Omena Hotels (production chain)
+  salora:     SaloHotels
+  test-admin: Test env for MUI admin
+
+typical_files_per_client:
+  custom-style.css:    overrides BUI / MUI CSS
+  feature-config.json: feature flags (toggles)
+  hotel-config.json:   hotel-level display config (chain-wide)
+  mui-config.json:     Management UI config
+  breakfast-description.json: per-hotel breakfast partner + hours + description (omena only has this; see content-files.yaml)
+  assets/:             per-client images / fonts / logos
+  sap-version-android-config.json / sap-version-ios-config.json: service-app version gating
+
+build_flow:
+  - export-config.js (root) aggregates the chosen client bundle.
+  - npm run export [<client>]           # run locally to preview the built bundle
+  - npm run start <client> <port>       # serve the chosen client on that port
+
+local_ports_convention:
+  client_config: 3100
+  admin_config: 3101
+  icon_host: 3200

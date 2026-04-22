@@ -1,0 +1,65 @@
+schema: 1
+node: retry-policy
+purpose: >-
+  Stop the agent from tunnel-visioning on an API path when it keeps erroring or returning
+  unhelpful data. Defines the retry budget and when to switch to DB or escalate.
+related: [.claude/knowledge/tasks.yaml, .claude/knowledge/bugs.yaml, .claude/knowledge/db.yaml, .claude/knowledge/authority-boundary.yaml]
+
+# The agent used to burn 10+ exploratory calls on one question. Example observed:
+# GET /api/prices/3/... (404), /api/prices/9/... (404), /api/prices/21/... (404), ...
+# The right move was "switch identifier (label not id)" or "psql instead".
+
+hard_rules:
+
+  budget_per_question: 3
+  # After 3 unsuccessful API attempts (see "counts_as_unsuccessful" below) on the
+  # same factual question, the agent MUST stop calling that endpoint family and
+  # take one of the three exit paths below.
+
+  counts_as_unsuccessful:
+    - HTTP 4xx (except 401, which means auth issue — that's separate)
+    - HTTP 5xx
+    - 2xx with an empty array or a "no such thing" error body when the caller clearly expects data
+    - 2xx with a payload that doesn't contain the field the caller needs
+
+  does_not_count_as_unsuccessful:
+    - 2xx with data in a different shape than expected (re-interpret the payload; don't retry)
+    - 401 (handle via the auth flow, not by retrying the endpoint)
+
+  exit_paths_after_budget:
+    - switch_identifier: If the call takes a hotel segment and keeps 404ing with a numeric id, try the LABEL (and vice-versa). See .claude/knowledge/hotel-identity.yaml. This counts as ONE retry, not part of the budget — identifier correction is allowed once per question.
+    - switch_to_db: If the task entry in .claude/knowledge/tasks.yaml has an `sql:` or `sql_reference:` key, or the question matches a query in .claude/knowledge/db/queries.yaml, switch to psql. DO NOT keep hitting API variants.
+    - escalate: If neither of the above fits, call mcp__nelson__escalate_to_human with a short summary of what failed and stop.
+
+  never_loop_through_prefix_variations:
+    rule: When one prefix (e.g. /api/management/secure/foo) 404s, do NOT auto-try /api/foo, /api/m_app/foo, /api/bui2/foo hoping one will land.
+    right_move: Re-read .claude/knowledge/security-prefixes.yaml#do_not_prefix_substitute. If the task doesn't list a known prefix, escalate.
+
+  never_retry_POST_that_returned_405:
+    rule: 405 means the method is wrong for the endpoint. Do NOT retry the same POST again, and do NOT try GET on a different path hoping it'll accept POST.
+    right_move: Check .claude/knowledge/bugs.yaml + the endpoints file for the actual method. Example: /api/availability-check is GET with query params, not POST (see bugs.yaml#availability-check).
+
+decision_flow:
+  - step: 1
+    if: task exists in tasks.yaml
+    do: use the endpoint listed. If prefer=sql, go directly to SQL.
+  - step: 2
+    if: first API call returns unsuccessful
+    do: Check bugs.yaml for the endpoint. If listed → apply the documented workaround.
+  - step: 3
+    if: still unsuccessful after 1-2 corrections
+    do: If an SQL fallback exists for this task, switch to psql. If not, escalate.
+  - step: 4
+    if: SQL also fails or no SQL path
+    do: Escalate with the exact attempts made + the errors.
+
+sql_fallback_hinting:
+  rule_for_agent: When reading a task entry, BOTH `api:` and `sql:` keys mean "you can choose either, but if API struggles, SQL is pre-validated — just use it". Do not treat SQL as second-class.
+
+examples_of_recent_failures_to_avoid:
+  - description: Agent called GET /api/management/secure/hotels → 404, then tried /api/hotels → 200.
+    fix: tasks.yaml#list_hotels has `strict_no_secure_twin` — read that first.
+  - description: Agent called POST /api/management/secure/availability-check → 405, then POST /api/availability-check → 405.
+    fix: bugs.yaml + endpoints/availability.yaml say these are GET, not POST. Don't retry.
+  - description: Agent called GET /api/prices/3/... through /api/prices/54/... (all numeric ids, all 404).
+    fix: hotel-identity.yaml says this endpoint takes LABEL. One call with LABEL (HKI2) works.

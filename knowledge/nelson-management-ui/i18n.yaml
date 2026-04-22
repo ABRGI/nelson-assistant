@@ -1,0 +1,24 @@
+schema: 1
+node: i18n
+purpose: Where UI strings (labels, buttons, validations) live + how to change them.
+
+inside_this_repo:
+  service: src/app/services/translations.service.ts
+  typed: src/app/@types/translations.ts
+  internal_tool_component: src/app/components/internal-tools/translations/translations.component.{html,ts,sass}
+  note: MUI has an internal tool to edit translations at runtime (via the translations service). Commits to string bundles typically land in nelson-client-configuration.
+
+cross_repo_bundles:
+  repo: nelson-client-configuration
+  paths:
+    shared: src/language/        # cross-client strings
+    per_client: src/config/<client>/  # client-specific overrides and long-form copy
+  tool: i18n-ally (VS Code extension) — path set to `src/language`
+  change_flow: PR on nelson-client-configuration develop → merge → bundled at build time into the MUI deploy.
+
+common_request_classes:
+  "change label on page X": small UI string → PR against nelson-client-configuration shared translations OR against this repo's template if inlined (grep the component's HTML first).
+  "translate to a new language": full bundle clone + menu wiring in app module.
+  "per-client variation (omena vs salora)": always in nelson-client-configuration, never inlined here.
+
+escalation_rule_for_the_assistant: Any i18n change = PR, not a runtime update. Escalate with the repo + file path + key + diff.

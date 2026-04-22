@@ -1,0 +1,30 @@
+schema: 1
+node: stack
+language: dart
+framework: Flutter
+fvm_pin: .fvmrc present — use fvm to lock Flutter SDK version
+platforms: [android, ios]
+
+entry_points:
+  pubspec: pubspec.yaml
+  main: lib/main.dart   # (typical Flutter entry)
+  android_manifest: android/app/src/main/AndroidManifest.xml
+  ios_config: ios/Runner/Info.plist
+  google_services:
+    - android/app/google-services.json    # Firebase
+    - ios/Runner/GoogleService-Info.plist
+
+env_variants:
+  files:
+    - .env
+    - .env.local2
+    - .env.production
+    - .env.staging
+  selected_via: --dart-define=ENV=<env> on flutter run / build commands
+
+deploy_targets:
+  android: Play Store (appbundle build)
+  ios: App Store Connect (ipa via Xcode or fastlane)
+  tooling:
+    - flutter_launcher_icons (dart run flutter_launcher_icons:main)
+    - flutter_native_splash (dart run flutter_native_splash:create)

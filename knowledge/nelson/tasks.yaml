@@ -1,0 +1,474 @@
+schema: 1
+node: tasks
+purpose: User intent → endpoint (and/or SQL). The hub for answering hotel-ops questions efficiently.
+related:
+  - .claude/knowledge/hotel-identity.yaml
+  - .claude/knowledge/enums.yaml
+  - .claude/knowledge/bugs.yaml
+  - .claude/knowledge/endpoints/*.yaml
+  - .claude/knowledge/db/queries.yaml
+  - .claude/knowledge/db/schema.yaml
+
+# Each task: { prefer: api|sql, api?: {...}, sql?: '...', when_sql?: '...', escalate?: bool }
+# `prefer` tells the agent which path to try first.
+# Destructive tasks set `escalate: true` → agent MUST call escalate_to_human first.
+
+tasks:
+
+  list_hotels:
+    intent: [what hotels do we have, list properties, which hotels, hotel list]
+    prefer: api
+    api: { call: GET /api/hotels }
+    returns: List<Hotel> with both `id` (numeric) and `label` (short code). Public endpoint, cheap.
+    when_sql: Never — the API is instant. Use it.
+    strict_no_secure_twin: >-
+      Do NOT try /api/management/secure/hotels — that endpoint does not exist and returns 404.
+      /api/hotels is a public endpoint that also works fine when called with a staff IdToken.
+      The "prefer /api/management/secure" heuristic does not apply here.
+
+  hotel_details:
+    intent: [info about hotel X, hotel details, management info for hotel]
+    prefer: api
+    api: { call: GET /api/management/secure/hotel-management/{label} }
+    note: Takes label, NOT numeric id.
+
+  today_arrivals:
+    intent: [who's arriving today, today's arrivals, today's check-ins]
+    prefer: api
+    api:
+      call: GET /api/management/secure/reservations
+      query: {hotelIds: csv-of-numeric-ids, startDate: today, endDate: today, dateMode: EXACT, state: CONFIRMED}
+    note: DO NOT use /api/management/secure/reservations/arrivals — broken, see bugs.yaml.
+    sql: |
+      SELECT r.uuid, r.code, r.start_date, r.end_date, r.adults, r.children, r.state
+        FROM reservation r
+       WHERE r.hotel_id = ANY($1::bigint[])
+         AND r.start_date = CURRENT_DATE
+         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE')
+       ORDER BY r.start_date, r.code;
+    when_sql: User asks across MANY hotels at once, or wants a count/aggregate.
+
+  today_departures:
+    intent: [who's checking out today, today's departures]
+    prefer: api
+    api:
+      call: GET /api/management/secure/reservations
+      query: {hotelIds: ..., startDate: today, endDate: today, dateMode: DEPARTURE, state: CONFIRMED}
+
+  occupancy_today:
+    intent: [how full are we today, today's occupancy]
+    prefer: api
+    api: { call: GET /api/management/secure/hotels/{id}/usage }
+    sql: |
+      SELECT h.label, h.name,
+             SUM(CASE WHEN r.start_date <= CURRENT_DATE AND r.end_date > CURRENT_DATE THEN 1 ELSE 0 END) AS in_house,
+             (SELECT count(*) FROM room WHERE hotel_id = h.id AND habitable = true) AS total_rooms
+        FROM hotel h
+        LEFT JOIN reservation r ON r.hotel_id = h.id AND r.state = 'CONFIRMED'
+       WHERE h.id = ANY($1::bigint[])
+       GROUP BY h.id;
+
+  reservation_by_code:
+    intent: [find reservation NNNN, look up booking NNNN, details for booking]
+    prefer: api
+    api: { call: GET /api/management/secure/reservations, query: {code: <code>} }
+    follow_up: If you have the uuid, GET /api/management/secure/reservations/{uuid} for full detail.
+
+  reservation_by_uuid:
+    prefer: api
+    api: { call: GET /api/management/secure/reservations/{uuid} }
+
+  reservation_search_by_guest_name:
+    intent: [find bookings for Jane Doe, reservations by guest name]
+    prefer: api
+    api: { call: GET /api/management/secure/reservations, query: {guestName: '<name>'} }
+    alt: GET /api/management/secure/crm/search (more CRM context; name + email + phone)
+    sql_note: Trigram-backed (pg_trgm) on customer tables — use ILIKE or `%` operator on the DB side.
+
+  reservation_activity_log:
+    intent: [what changed on booking NNNN, activity log]
+    prefer: api
+    api: { call: GET /api/management/secure/user_activity_log/reservation/{code} }
+    also: GET /api/management/secure/reservation-log/{code}
+
+  reservation_cancel:
+    intent: [cancel booking NNNN]
+    escalate: true
+    reason: Destructive + refund implications. Always escalate first.
+
+  availability_check_public:
+    intent: [is there a room at hotel X on dates, check availability]
+    prefer: api
+    api:
+      call: GET /api/availability-check
+      query:
+        hotel: numeric id (Long), NOT label     # resolve via GET /api/hotels if you only have the label
+        startDate: YYYY-MM-DD
+        endDate: YYYY-MM-DD
+        discountVoucherCode: optional
+    returns: AvailabilityInfo (per-product ProductOffer breakdown; see response-shapes.yaml)
+    trap: This is GET, not POST. docs/12-api-reference.md shows POST — that is WRONG. See bugs.yaml. One hotel per call — loop if you need several.
+
+  availability_check_staff:
+    intent: [staff view of availability, rates + availability together]
+    prefer: api
+    api:
+      call: GET /api/management/secure/availability-check
+      query:
+        hotel: numeric id (Long)
+        startDate: YYYY-MM-DD
+        endDate: YYYY-MM-DD
+        discountVoucherCode: optional
+        reservationUuid: optional (admin-only; when editing an existing reservation)
+    returns: AvailabilityInfoForAdmin (adds eciLcoAvails + richer ProductOffer fields; see response-shapes.yaml)
+
+  pricing_public_lookup:
+    intent:
+      - what are the prices for hotel X on dates
+      - how much is a room at X on date Y
+      - what's the rate for X
+    prefer: api
+    api: { call: GET /api/prices/{label}/{startDate}/{endDate}/{rooms}/{adults}/{children}/ }
+    optional_query:
+      - discountVoucherCode: string
+      - priceOnly: bool (default false; set true for calendar/per-day feed without occupancy eval)
+      - adminMode: bool (default false; staff variant lives at /api/management/secure/prices/...)
+      - priceType: REGULAR (default) — keep as-is unless you know you need another
+    returns: RoomPrice (single suggested price — NOT per-room-type). See .claude/knowledge/response-shapes.yaml#RoomPrice.
+    defaults_when_user_omits:
+      rooms: 1
+      adults: 1
+      children: 0
+      nights: 1                    # endDate = startDate + 1 day
+      mention_in_reply: "Assuming 1 room, 1 adult, 1 night."
+    traps:
+      - Takes LABEL (e.g. HKI2), not numeric id — see hotel-identity.yaml. URL template calls the segment `{nelsonHotelId}` but it IS the label.
+      - Trailing slash is required.
+      - Returns ONE price for the requested occupancy, not a per-room-type list. If the user asks about a specific room type, use `pricing_by_room_type` instead.
+    extract_from_response:
+      nightly_rate: nelsonPriceList[0].selectedDateRangePrices[<date>].pricePerDate
+      total_for_stay: sum of selectedDateRangePrices[].pricePerDate
+      sold_out: nelsonPriceList[0].selectedDateRangePrices[<date>].soldOut
+      rooms_available: nelsonPriceList[0].selectedDateRangePrices[<date>].numberOfAvailableRooms
+
+  pricing_by_room_type:
+    intent:
+      - price for a STANDARD / SUITE / SUPERIOR room at hotel X on date Y
+      - rate for a specific room type
+      - how much for a superior room next Friday
+    prefer: api
+    api:
+      call: GET /api/management/secure/availability-check
+      query:
+        hotel: numeric id (Long) — resolve from label via GET /api/hotels first
+        startDate: YYYY-MM-DD
+        endDate: YYYY-MM-DD (startDate + nights)
+        discountVoucherCode: optional
+    defaults_when_user_omits:
+      nights: 1
+      mention_in_reply: "Assuming 1 night."
+    returns: AvailabilityInfoForAdmin — hotelOffers[0].productOffers[] with roomType + price. See .claude/knowledge/response-shapes.yaml#ProductOffer.
+    extract_from_response:
+      filter: hotelOffers[0].productOffers[].roomType == <requested type from enums.yaml>
+      total_price: filtered.price             # MonetaryAmount, amount + currency.currencyCode
+      nightly_price: filtered.currentPrices[<date>]
+      availability: filtered.availableRoom
+    public_variant: GET /api/availability-check (same query params minus reservationUuid; returns AvailabilityInfo)
+    fallback_if_no_admin_token: use the public variant — core fields (productOffers with roomType + price) are the same.
+
+  pricing_rules:
+    intent:
+      - base rates for room type (not a live quote)
+      - pricing rules configured for STANDARD / SUITE / ...
+    prefer: api
+    api: { call: GET /api/management/secure/pricing_rules/{hotelId}/{roomType} }
+    id: numeric           # this endpoint takes numeric hotel id, not label
+    roomType_values_in: .claude/knowledge/enums.yaml
+    semantics: Returns the CONFIGURED pricing rules, not a date-specific sellable price. For a live quote on a date, use pricing_by_room_type.
+
+  pricing_which_to_use_selector:
+    rule: >-
+      If the user asks "price for X" without specifying room type → pricing_public_lookup.
+      If the user names a room type (STANDARD, SUITE, SUPERIOR, SINGLE, etc.) → pricing_by_room_type.
+      If the user asks about the "base rate" / "rule" / "configured price" → pricing_rules.
+      If the user asks about seasonal / special-interval overrides → secif_season_pricing.
+
+  secif_season_pricing:
+    intent: [season pricing, special prices for date range]
+    prefer: api
+    api: { call: GET /api/management/secure/secif_pricings/{hotelId}/{startDate}/{endDate} }
+
+  pet_friendly_pricing:
+    intent: [pet surcharge, pet-friendly pricing]
+    prefer: api
+    api: { call: GET /api/management/secure/pet_friendly_pricings/{hotelId}/{startDate}/{endDate} }
+
+  room_inventory:
+    intent: [what rooms exist at hotel X, list rooms]
+    prefer: api
+    api: { call: GET /api/management/secure/rooms/info, query: {hotelId: <id>} }
+
+  room_details:
+    intent: [info on room 205, details of room]
+    prefer: api
+    api: { call: GET /api/management/secure/rooms/info/details/{roomId} }
+
+  room_clean_status_history:
+    intent: [cleaning history for room, when was room cleaned]
+    prefer: api
+    api: { call: GET /api/management/secure/rooms/{roomId}/clean-event-history }
+
+  mark_room_clean_or_dirty:
+    intent: [mark room N clean, mark room dirty]
+    escalate: true
+    reason: Operational side-effect visible to service-app users — confirm with a human first.
+
+  door_code_for_reservation:
+    prefer: api
+    api: { call: GET /api/management/secure/reservations/{uuid}/door-code/get }
+
+  reservation_door_code_reset:
+    escalate: true
+    reason: Writes/rotates credentials on lock systems.
+
+  payments_for_reservation:
+    prefer: api
+    api: { call: GET /api/management/secure/payments, query: {reservationUuid: <uuid>} }
+
+  refund_payment:
+    escalate: true
+    reason: Money movement — never execute without human sign-off.
+
+  report_sales:
+    intent: [sales report]
+    prefer: api
+    api: { call: GET /api/management/secure/reports/sales }
+    returns: XLSX binary — see docs/13-reports.md for column layout.
+
+  report_revenue:
+    prefer: api
+    api: { call: GET /api/management/secure/reports/revenue }
+    returns: XLSX binary
+
+  report_on_the_books:
+    intent: [OTB, on the books, forward-looking occupancy]
+    prefer: api
+    api: { call: GET /api/management/secure/reports/on-the-books }
+
+  report_daily_availability:
+    prefer: api
+    api: { call: GET /api/management/secure/reports/daily-availability }
+
+  report_cleaning:
+    prefer: api
+    api: { call: GET /api/management/secure/reports/cleaning }
+
+  report_guests_inhouse:
+    intent: [who's in the hotel right now, in-house guests]
+    prefer: api
+    api: { call: GET /api/management/secure/reports/guests-inhouse }
+
+  sales_forecast_json:
+    intent: [sales forecast data, JSON feed of forecast]
+    prefer: api
+    api: { call: GET /api/management/secure/sales-forecast-daily-data }
+    note: JSON data — same metric structure as the XLSX forecast report.
+
+  voucher_lookup:
+    intent: [is voucher code CAMP12 valid, check discount code]
+    prefer: api
+    api: { call: GET /api/discount/{code} }
+
+  voucher_check_availability:
+    prefer: api
+    api: { call: GET /api/voucher/discount/check/{label}/{start}/{end}/{rooms}/{adults}/{children}/{code} }
+
+  maintenance_events:
+    intent: [open maintenance tickets, broken rooms]
+    prefer: api
+    api:
+      list: GET /api/management/secure/maintenance
+      rooms: GET /api/management/secure/maintenance/rooms
+
+  crm_search:
+    intent: [find customer, guest search, who is this email]
+    prefer: api
+    api: { call: GET /api/management/secure/crm/search }
+    alt: GET /api/management/secure/crm/customer-card (full card)
+
+  allotment_info:
+    prefer: api
+    api:
+      - GET /api/management/secure/allotment/{id}
+      - GET /api/management/secure/allotment/{hotelId}/available-rooms
+
+  ota_failed_reservations:
+    intent: [OTA failed events, Booking.com sync errors]
+    prefer: api
+    api: { call: GET /api/management/secure/ota-failed-reservation/events }
+
+  channel_availability_stat:
+    prefer: api
+    api: { call: GET /api/management/secure/channel/hotels/{id}/availability-stat }
+
+  last_beonx_push:
+    intent:
+      - when was the last beonx data pushed
+      - last BeonX XML
+      - recent beonx activity
+    prefer: api
+    api:
+      call: GET /api/beonx/xml-logs
+      query: { limit: 1 }      # newest-first order; one row = the most recent push
+    returns: List<BeonxXmlLog> — read hotel_label + xml_type + sent_date + success.
+    per_hotel_variant: GET /api/beonx/xml-logs?hotelLabel=<label>&limit=1
+    sql_alternative: .claude/knowledge/db/queries.yaml#last_beonx_push_per_hotel
+
+  beonx_logs_by_reservation:
+    intent: [BeonX history for booking X, did this reservation sync to BeonX]
+    prefer: api
+    api: { call: GET /api/beonx/xml-logs/reservation/{reservationCode} }
+
+  beonx_failed_pushes:
+    intent: [BeonX errors, failed BeonX pushes]
+    prefer: api
+    api:
+      call: GET /api/beonx/xml-logs
+      query: { success: false, limit: 20 }
+
+  aggregate_across_many_hotels_or_dates:
+    intent: [total bookings last month across all hotels, YTD revenue, cross-hotel trend]
+    prefer: sql
+    reason: REST endpoints return per-hotel; aggregations across hotels/months need DB access.
+    sql_reference: .claude/knowledge/db/queries.yaml
+
+  # -------- KPI tasks (ADR, RevPAR, Occupancy, Revenue, New Sales) --------
+  # Formulas + canonical SQL live in .claude/knowledge/kpis.yaml. Load that leaf.
+
+  kpi_adr_for_date:
+    intent:
+      - ADR for <date>
+      - what was the average daily rate on <date>
+      - room rate sold on <date>
+    prefer: sql
+    reference: .claude/knowledge/kpis.yaml#kpis.adr
+    note: Use the revenue_and_adr_for_single_date canonical SQL in kpis.yaml. It already returns YoY (this year vs -364 days).
+
+  kpi_adr_yoy:
+    intent:
+      - ADR last year vs this year
+      - YoY ADR for <date>
+      - how does ADR compare to same time last year
+    prefer: sql
+    reference: .claude/knowledge/kpis.yaml#yoy_convention
+    convention: Nelson YoY = invoice_date - 364 days (DoW-aligned). Say so in the reply.
+    scope_default: all available hotels (per-hotel + total). Tell user "across all hotels" if they omit scope.
+
+  kpi_revpar_for_date:
+    intent: [RevPAR for <date>, revenue per available room]
+    prefer: sql
+    reference: .claude/knowledge/kpis.yaml#kpis.revpar
+
+  kpi_occupancy_for_date:
+    intent: [occupancy for <date>, how full were we on <date>]
+    prefer: sql
+    reference: .claude/knowledge/kpis.yaml#kpis.occupancy
+    alternative_for_today: occupancy_today task above (uses live API).
+
+  kpi_revenue_for_range:
+    intent: [revenue between <d1> and <d2>, monthly revenue, quarterly revenue]
+    prefer: sql
+    reference: .claude/knowledge/kpis.yaml#canonical_sql.revenue_and_adr_for_range
+    parity_note: Matches the XLSX Revenue report in the MUI, line for line.
+
+  kpi_new_sales_for_date:
+    intent: [new sales on <date>, bookings confirmed on <date>]
+    prefer: sql
+    reference: .claude/knowledge/kpis.yaml#kpis.new_sales
+    note: new_sales anchors on li.confirmed::date (booking date), not invoice_date (stay date). Pick the right one based on user's phrasing.
+
+  # -------- Diagnostic tasks (user reports "something is broken") --------
+
+  diagnose_api_error:
+    intent:
+      - I got error X from endpoint Y
+      - this returned 406 / 500 / 404
+      - why is this failing
+    prefer: graph-lookup-first
+    playbook:
+      - Load .claude/knowledge/diagnostics.yaml. Match the error pattern by status + message substring + endpoint.
+      - Follow the "diagnose" steps in the matched entry. Don't guess.
+      - If no match, check .claude/knowledge/bugs.yaml. If still nothing, investigate + propose a new entry.
+
+  diagnose_receipt_pdf_fails:
+    intent:
+      - receipt PDF is not available
+      - download-receipt returned an error
+      - PDF says "No glyph"
+    prefer: graph-lookup-first
+    reference: .claude/knowledge/diagnostics.yaml#pdf_receipt_no_glyph
+    follow_up_sql: .claude/knowledge/db/queries.yaml#find_control_chars_on_reservation
+
+  # -------- Customer-support patterns --------
+
+  support_request_generic:
+    intent:
+      - can you change / move / transfer / merge / split / reassign
+      - customer is asking for X on reservation Y
+      - we need to do Z for the guest
+    prefer: graph-lookup-first
+    reference: .claude/knowledge/support-playbooks.yaml
+    rule: Always match to a specific playbook there. Destructive steps require escalate_to_human.
+
+  diagnose_ota_booking_didnt_sync:
+    intent:
+      - Booking.com reservation didn't come through
+      - Expedia reservation missing in Nelson
+      - OTA reservation didn't arrive
+    prefer: graph-lookup-first
+    reference: .claude/knowledge/diagnostics.yaml#ota_booking_didnt_sync_to_nelson
+    playbook:
+      - GET /api/management/secure/ota-failed-reservation/events — find the failure (filter by booking_channel + hotel + recent).
+      - Read the `error` column to report the cause.
+      - If user wants the reservation created manually → escalate (destructive).
+
+  diagnose_failover_email_missing:
+    intent:
+      - failover email / OTA notification didn't arrive
+      - we didn't get the sync-failure email
+    prefer: graph-lookup-first
+    reference: .claude/knowledge/diagnostics.yaml#failover_email_not_received
+
+  support_change_bui_breakfast_text:
+    intent:
+      - change breakfast hours / times / description shown in booking flow
+      - fix breakfast text for hotel X
+      - update breakfast description
+    prefer: cross-repo
+    reference: .claude/knowledge/cross-repo-content.yaml#breakfast_descriptions_in_bui
+    escalate: true
+    reason: Lives in nelson-client-configuration repo (JSON config, not Nelson DB). Agent has no write access.
+
+  support_change_ui_copy:
+    intent:
+      - the UI says X but should say Y
+      - change this label / button / placeholder
+      - translate / update i18n string
+    prefer: cross-repo
+    reference: .claude/knowledge/cross-repo-content.yaml
+    escalate: true
+    reason: Copy lives in the relevant frontend repo (BUI2, MUI, service app, mobile app) or in nelson-client-configuration. Use the decision tree in cross-repo-content.yaml.
+
+  support_move_payment_between_reservations:
+    intent:
+      - change the credit card payment from reservation A to reservation B
+      - transfer / move / reassign payment between reservations
+    prefer: graph-lookup-first
+    reference: .claude/knowledge/support-playbooks.yaml#move_payment_between_reservations
+    escalate: true
+    reason: No direct move endpoint in Nelson. Refund + re-charge is a two-step destructive workflow — human approval required.
+
+fallback_rule_for_agent: >-
+  If the user's intent doesn't match a task above, scan docs/12-api-reference.md
+  for a candidate endpoint. If you still can't find one and the data is clearly
+  in the DB, use the psql path per .claude/knowledge/db.yaml.

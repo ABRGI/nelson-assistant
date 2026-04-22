@@ -1,0 +1,77 @@
+schema: 1
+node: endpoints/pricing
+purpose: Price lookups, pricing rules, season (secif) pricing, pet-friendly pricing.
+related: [.claude/knowledge/hotel-identity.yaml, .claude/knowledge/enums.yaml]
+
+public_price_lookup:
+  method: GET
+  path: /api/prices/{label}/{startDate}/{endDate}/{rooms}/{adults}/{children}/
+  traps:
+    - Path takes LABEL (e.g. HKI2), NOT numeric id. 404 with numeric.
+    - URL template in domain/src/main/java/nelson/api/Urls.java names the segment `{nelsonHotelId}` but the @PathVariable binds to `String hotelLabel`. The variable name is misleading.
+    - Trailing slash is required.
+  optional_query:
+    - discountVoucherCode (string)
+    - priceOnly (boolean, default false — set true to get a per-day calendar feed without full occupancy eval)
+    - adminMode (boolean, default false)
+    - priceType (string, default "REGULAR")
+  returns_type: RoomPrice                 # see .claude/knowledge/response-shapes.yaml
+  semantics: Single suggested price for the requested occupancy. NOT a per-room-type breakdown. For room-type-specific prices use POST /api/availability-check (see endpoints/availability.yaml).
+  staff_variant:
+    method: GET
+    path: /api/management/secure/prices/{label}/{startDate}/{endDate}/{rooms}/{adults}/{children}/
+    note: Requires MUI JWT. Implementation delegates to the same method as the public variant.
+  companion: GET /api/prices_for_google    # same RoomPrice shape, different query params (hotel, sdate, edate, rooms, adults, children, discountcode, priceOnly defaults true)
+
+staff_rates_list:
+  method: GET
+  path: /api/management/secure/rates
+  notes: List of rate codes; pair with pricing_rules for actual numbers.
+
+staff_pricing_rules:
+  method: GET
+  path: /api/management/secure/pricing_rules/{hotelId}/{roomType}
+  id: numeric
+  roomType_values_in: .claude/knowledge/enums.yaml
+  update:
+    method: POST
+    path: /api/management/secure/pricing_rule
+    destructive: true
+
+staff_secif_season_prices:
+  # Season / special-interval pricing overrides.
+  read:
+    method: GET
+    path: /api/management/secure/secif_pricings/{hotelId}/{startDate}/{endDate}
+    id: numeric
+  write:
+    method: POST
+    path: /api/management/secure/secif_pricings/{hotelId}
+    destructive: true
+
+staff_pet_friendly_pricing:
+  read:
+    method: GET
+    path: /api/management/secure/pet_friendly_pricings/{hotelId}/{startDate}/{endDate}
+    id: numeric
+  write:
+    method: POST
+    path: /api/management/secure/pet_friendly_pricings/{hotelId}
+    destructive: true
+
+staff_product_price_overrides:
+  method: POST
+  path: /api/management/secure/product/update-price
+  destructive: true
+  companion_vat: POST /api/management/secure/product/update-vat
+
+staff_specific_product_prices_date:
+  method: GET
+  path: /api/management/secure/prices/{hotelId}/{productId}/{date}
+  id: numeric
+
+mobile_price_lookup:
+  method: GET
+  path: /api/m_app/prices/{hotelId}/{startDate}/{endDate}/{rooms}/{adults}/{children}
+  id: numeric
+  notes: Mobile app variant — uses numeric id. Different from /api/prices which uses label.

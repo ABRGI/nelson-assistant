@@ -1,0 +1,208 @@
+schema: 1
+node: db/queries
+purpose: Pre-validated read-only SQL for common hotel-ops questions. Copy, parameterize, run.
+related: [.claude/knowledge/db.yaml, .claude/knowledge/db/schema.yaml, .claude/knowledge/db/relations.yaml]
+
+safety_reminder: All queries here are SELECT only. Always bound with LIMIT on exploratory reads. Use bind params ($1, $2…) via the agent's templated call — never string-interpolate user input.
+
+queries:
+
+  today_arrivals_one_hotel:
+    params: [hotel_id (bigint)]
+    sql: |
+      SELECT r.uuid, r.code, r.start_date, r.end_date, r.adults, r.children, r.state,
+             c.first_name, c.last_name, c.email
+        FROM reservation r
+        LEFT JOIN customer c ON r.customer_id = c.id
+       WHERE r.hotel_id = $1
+         AND r.start_date = CURRENT_DATE
+         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE')
+       ORDER BY r.code;
+
+  arrivals_many_hotels:
+    params: [hotel_ids (bigint[])]
+    sql: |
+      SELECT h.label, count(*) AS arrivals
+        FROM reservation r JOIN hotel h ON r.hotel_id = h.id
+       WHERE r.hotel_id = ANY($1::bigint[])
+         AND r.start_date = CURRENT_DATE
+         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE')
+       GROUP BY h.label
+       ORDER BY h.label;
+
+  in_house_right_now:
+    params: [hotel_id]
+    sql: |
+      SELECT count(*) AS in_house
+        FROM reservation
+       WHERE hotel_id = $1
+         AND state = 'CONFIRMED'
+         AND start_date <= CURRENT_DATE
+         AND end_date   >  CURRENT_DATE;
+
+  occupancy_for_date_range:
+    params: [hotel_id, start, end]
+    sql: |
+      WITH days AS (
+        SELECT generate_series($2::date, ($3::date - 1), '1 day')::date AS d
+      ),
+      rooms_total AS (
+        SELECT count(*)::numeric AS total FROM room WHERE hotel_id = $1 AND habitable = true
+      )
+      SELECT d.d AS date,
+             count(r.*) FILTER (WHERE r.state = 'CONFIRMED' AND r.start_date <= d.d AND r.end_date > d.d) AS sold,
+             (SELECT total FROM rooms_total) AS total_rooms,
+             CASE (SELECT total FROM rooms_total)
+               WHEN 0 THEN 0
+               ELSE round(count(r.*) FILTER (WHERE r.state = 'CONFIRMED' AND r.start_date <= d.d AND r.end_date > d.d)::numeric * 100 / (SELECT total FROM rooms_total), 1)
+             END AS occupancy_pct
+        FROM days d
+        LEFT JOIN reservation r ON r.hotel_id = $1
+       GROUP BY d.d
+       ORDER BY d.d;
+
+  reservation_count_by_state:
+    params: [hotel_ids, start, end]
+    sql: |
+      SELECT h.label, r.state, count(*) AS n
+        FROM reservation r JOIN hotel h ON r.hotel_id = h.id
+       WHERE r.hotel_id = ANY($1::bigint[])
+         AND r.start_date >= $2::date
+         AND r.start_date <  $3::date
+       GROUP BY h.label, r.state
+       ORDER BY h.label, r.state;
+
+  revenue_per_hotel_for_range:
+    purpose: Sum of total_price for confirmed reservations whose stay overlaps the range.
+    params: [start, end]
+    sql: |
+      SELECT h.label, h.name, h.currency,
+             count(r.*) AS nights_sold,
+             round(sum(r.total_price)::numeric, 2) AS revenue
+        FROM reservation r JOIN hotel h ON r.hotel_id = h.id
+       WHERE r.state = 'CONFIRMED'
+         AND r.start_date < $2::date
+         AND r.end_date   > $1::date
+       GROUP BY h.label, h.name, h.currency
+       ORDER BY revenue DESC NULLS LAST;
+
+  bookings_by_channel_last_30d:
+    sql: |
+      SELECT r.channel, count(*) AS n
+        FROM reservation r
+       WHERE r.created_ts >= now() - interval '30 days'
+         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE')
+       GROUP BY r.channel
+       ORDER BY n DESC;
+
+  dirty_rooms_by_hotel:
+    params: [hotel_id]
+    sql: |
+      SELECT rm.label AS room, rm.clean, rm.habitable
+        FROM room rm
+       WHERE rm.hotel_id = $1 AND rm.clean = false AND rm.habitable = true
+       ORDER BY rm.label;
+
+  last_clean_event_for_room:
+    params: [room_id]
+    sql: |
+      SELECT clean_type, clean_ts, comment, source
+        FROM room_clean_event
+       WHERE room_id = $1
+       ORDER BY clean_ts DESC
+       LIMIT 10;
+
+  open_maintenance_blocks:
+    params: [hotel_id]
+    sql: |
+      SELECT m.id, m.start_ts, m.end_ts, c.name AS category, m.comment
+        FROM maintenance_reservation m
+        LEFT JOIN maintenance_reservation_category c ON m.category_id = c.id
+       WHERE m.hotel_id = $1
+         AND m.end_ts >= now()
+       ORDER BY m.start_ts;
+
+  payment_totals_for_reservation:
+    params: [reservation_id]
+    sql: |
+      SELECT provider, status, sum(amount) AS total, currency
+        FROM payment
+       WHERE reservation_id = $1
+       GROUP BY provider, status, currency
+       ORDER BY provider;
+
+  find_customer_by_email:
+    params: [email]
+    sql: |
+      SELECT c.id, c.email, c.first_name, c.last_name, c.phone, c.language,
+             count(r.id) AS bookings
+        FROM customer c LEFT JOIN reservation r ON r.customer_id = c.id
+       WHERE c.email = $1
+       GROUP BY c.id;
+
+  fuzzy_guest_search:
+    params: [query]
+    notes: Uses pg_trgm. Tune threshold for recall.
+    sql: |
+      SELECT c.id, c.email, c.first_name, c.last_name,
+             similarity(c.first_name || ' ' || c.last_name, $1) AS score
+        FROM customer c
+       WHERE (c.first_name || ' ' || c.last_name) % $1
+       ORDER BY score DESC
+       LIMIT 20;
+
+  voucher_usage:
+    params: [code]
+    sql: |
+      SELECT v.code, v.category, v.type, v.amount, v.used,
+             v.valid_from, v.valid_until
+        FROM voucher v
+       WHERE v.code = $1;
+
+  channel_event_errors_last_24h:
+    sql: |
+      SELECT ce.type, count(*) AS n
+        FROM channel_event ce
+       WHERE ce.status = 'FAILURE'
+         AND ce.created_ts >= now() - interval '24 hours'
+       GROUP BY ce.type
+       ORDER BY n DESC;
+
+  find_control_chars_on_reservation:
+    purpose: Locate which text field on a reservation contains a tab / control char (common cause of PDF receipt 406 errors).
+    params: [code (reservation.code)]
+    sql: |
+      WITH r AS (SELECT * FROM reservation WHERE code = $1)
+      SELECT 'customer.first_name' AS field, c.first_name::text AS value
+        FROM r JOIN customer c ON c.id = r.customer_id
+       WHERE c.first_name ~ E'[\\t\\v\\f\\x00]'
+      UNION ALL
+      SELECT 'customer.last_name', c.last_name::text
+        FROM r JOIN customer c ON c.id = r.customer_id
+       WHERE c.last_name ~ E'[\\t\\v\\f\\x00]'
+      UNION ALL
+      SELECT 'customer.address_street', c.address_street::text
+        FROM r JOIN customer c ON c.id = r.customer_id
+       WHERE c.address_street ~ E'[\\t\\v\\f\\x00]'
+      UNION ALL
+      SELECT 'customer.address_city', c.address_city::text
+        FROM r JOIN customer c ON c.id = r.customer_id
+       WHERE c.address_city ~ E'[\\t\\v\\f\\x00]'
+      UNION ALL
+      SELECT 'reservation.comment', r.comment
+        FROM r
+       WHERE r.comment ~ E'[\\t\\v\\f\\x00]'
+      UNION ALL
+      SELECT 'product_order.description', po.description::text
+        FROM r JOIN product_order po ON po.reservation_id = r.id
+       WHERE po.description IS NOT NULL AND po.description ~ E'[\\t\\v\\f\\x00]'
+      LIMIT 20;
+    note: >-
+      Adjust the column list to match the actual customer + product_order schema in your environment
+      (exact column names may drift per migration). Extend to include Fennoa line items (line_item joined
+      via FENNOA-related product types) if no hit in the above fields.
+
+when_to_add_a_query:
+  - A hotel-ops question recurs and the pure API path requires many calls or returns too much data.
+  - A question is known to be broken via the API (consult bugs.yaml).
+  - Always verify the query runs against the observer role before committing.

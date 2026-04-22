@@ -1,0 +1,116 @@
+schema: 1
+node: diagnostics
+purpose: Error-message → likely cause → how to diagnose. For "this broke, help me figure out why" questions, not data questions.
+related: [.claude/knowledge/bugs.yaml, .claude/knowledge/code-paths.yaml, .claude/knowledge/db.yaml]
+
+how_to_use:
+  - Match the error response (status + error code + message substring) to an entry below.
+  - Follow the diagnostic playbook. Do NOT retry the same call or re-guess the endpoint.
+  - If no entry matches, add one here after you've diagnosed it.
+
+error_patterns:
+
+  pdf_receipt_no_glyph:
+    symptom:
+      status: 406 NOT_ACCEPTABLE
+      body_error: NOT_ACCEPTABLE
+      message_substring: "No glyph for U+"
+      endpoints_affected:
+        - GET /api/reservations/{uuid}/download-receipt/{lang}
+        - Manual invoice / gift card PDF endpoints (same PDFBox pipeline)
+    root_cause: >-
+      Apache PDFBox renderer (via ReceiptPDF / ManualInvoicePDF / GiftCardReceiptPDF)
+      uses Arial Unicode MS as the fallback font. Control chars (U+0009 tab, U+000B vtab,
+      U+000C form feed, U+0000 NUL) and a few exotic scripts have no glyph in that font,
+      so PDFBox throws IllegalArgumentException. ApiExceptionHandler wraps that as 406.
+      There is NO sanitization step in the PDF classes (verified in ReceiptPDF.java).
+    most_common_char: U+0009 (tab) — typically copy-pasted from Excel, Fennoa exports, or OTA feeds into name/address/comment/invoice-item fields.
+    diagnose:
+      - Resolve the user's reservation reference (usually a numeric `code`, 7-10 digits) to internal `uuid`: GET /api/management/secure/reservations?code=<code>
+      - Search text fields for the control char (psql). Start with Fennoa additional invoice items + customer name/address + reservation comments.
+      - Canonical SQL sketch is in .claude/knowledge/db/queries.yaml#find_control_chars_on_reservation
+    mitigations:
+      data_level: Edit the offending field in the MUI (or via secure update endpoint, escalate first). Space in place of tab.
+      code_level: Add a control-char strip in ReceiptPDF/ManualInvoicePDF/GiftCardReceiptPDF before PDFBox rendering. See .claude/knowledge/code-paths.yaml#pdf_generation.
+    assistant_reply_template: >-
+      "The receipt can't render because a text field on the reservation has a tab
+      character (U+0009) that the PDF font can't draw. Most commonly this is in a
+      Fennoa invoice item or the customer's name/address. I can search the
+      reservation to pinpoint the field if you want — say go."
+
+  reservations_arrivals_500:
+    symptom:
+      status: 500
+      message_substring: "hotel is null"
+      endpoint: GET /api/management/secure/reservations/arrivals
+    root_cause: Endpoint is broken (see bugs.yaml).
+    mitigation: Use GET /api/management/secure/reservations with dateMode=EXACT + startDate=today + endDate=today.
+
+  api_price_404_numeric_id:
+    symptom:
+      status: 404
+      endpoint_pattern: /api/prices/<numeric>/...
+    root_cause: Path expects hotel LABEL (e.g. HKI2), not numeric id. Variable template name `{nelsonHotelId}` is misleading.
+    mitigation: See .claude/knowledge/hotel-identity.yaml.
+
+  availability_check_405:
+    symptom:
+      status: 405
+      endpoint: /api/availability-check or /api/management/secure/availability-check
+    root_cause: You sent GET. These endpoints are POST-only with a JSON body.
+    mitigation: Send POST with { hotelLabels, startDate, endDate, adults, children, rooms } body.
+
+  ota_booking_didnt_sync_to_nelson:
+    symptom:
+      - "Booking.com/Expedia reservation didn't come through"
+      - "OTA reservation missing in Nelson"
+    root_cause: Channel-manager sync failure. Nelson records each failure in the `ota_failed_reservation` table. A failover notification email is also meant to go to a configured staff list.
+    diagnose:
+      - GET /api/management/secure/ota-failed-reservation/events — recent failures. Filter by booking_channel and hotel.
+      - Inspect the `error` column on the matching row. event_type is CREATE/UPDATE/CANCEL.
+      - Cross-reference channel_event table for adjacent FAILURE events (see db/schema.yaml#channel_event).
+      - Ask the user for the booking_channel_reservation_id if not provided — the table key is (booking_channel, booking_channel_reservation_id).
+    mitigations:
+      manual_create: Creating the missing reservation in Nelson is destructive (escalate).
+      mark_resolved: POST /api/management/secure/ota-failed-reservation/resolve-events/{id} is a write (escalate).
+
+  failover_email_not_received:
+    symptom: "Failover / OTA-failure notification email didn't arrive"
+    root_cause: The OTA_FAILED_RESERVATION_CREATION email is sent to a MUI-configured recipient list per event type. If the list is empty or the address is stale, the email silently fails to reach anyone.
+    related_email_template: reservation-core/src/main/resources/ota-failed-reservation-creation-{{lang}}.txt
+    diagnose:
+      - GET /api/management/secure/email-notification/event-types — confirm OTA_FAILED_RESERVATION_CREATION is one of the event types.
+      - GET /api/management/secure/email-notification/recipients — check who is configured for that event type.
+      - If the list is configured, check the SES / SMTP send logs (outside Nelson — ask the infra team).
+    mitigations:
+      add_recipient: POST /api/management/secure/email-notification/recipients — destructive (escalate).
+      update_recipient: PUT /api/management/secure/email-notification/recipients/{id} — destructive (escalate).
+
+  refresh_token_invalid:
+    symptom:
+      status: 401 or 400 from POST /api/user/login (refresh branch)
+    root_cause: The user's refresh token was rotated/revoked or the user was removed from Cognito.
+    owned_by: nelson-assistant pipeline (handled automatically via RefreshTokenInvalid → re-auth prompt).
+
+data_quality_smells:
+  # Broadly applicable — fields where these most often appear.
+  control_chars:
+    types: [U+0009 tab, U+000B vtab, U+000C form feed, U+0000 NUL, U+00A0 non-breaking space]
+    common_fields: [customer.first_name, customer.last_name, customer.address_street, customer.address_city, reservation.comment, product_order.description, line_item (Fennoa labels)]
+    detect_regex_in_sql: E'[\\t\\v\\f\\x00]'
+  smart_quotes_and_em_dashes:
+    types: [U+2018 U+2019 U+201C U+201D U+2013 U+2014]
+    pain: Old PDF fonts without those glyphs will also fail.
+  exotic_scripts:
+    symptom: "No glyph" error even after tabs stripped.
+    likely: Guest name with Thai/Bengali/Arabic scripts; Arial Unicode MS covers most but not all.
+    mitigation: escalate + fix in the source data OR extend the font.
+
+when_to_escalate:
+  - The error is a money movement going wrong (payment, refund, gift card).
+  - The root cause touches tenant data integrity (corrupt encoding, missing FK).
+  - The fix is a code change to Nelson itself, not a data correction.
+
+add_a_new_entry:
+  when: You diagnose an error and the pattern recurs.
+  how: Match the {status, error code, message substring} format above. Name the entry after the feature + failure mode (e.g. pdf_receipt_no_glyph).

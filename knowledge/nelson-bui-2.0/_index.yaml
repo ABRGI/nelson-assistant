@@ -1,0 +1,21 @@
+schema: 1
+repo: nelson-bui-2.0
+purpose: >-
+  React 17 booking UI (BUI 2.0). Public-facing site where guests search availability,
+  price rooms, add breakfast/ECI/LCO, and complete a booking. Calls /api/* and
+  /api/bui2/* on the Nelson backend. Multi-client via nelson-client-configuration.
+role_in_ecosystem: Guest-facing booking frontend. Different from guest mobile app (omena-mobile-app).
+
+index:
+  - path: .claude/knowledge/stack.yaml
+    when: Framework / dep / version constraints (React 17 pinning is strict).
+  - path: .claude/knowledge/docs-map.yaml
+    when: You need narrative context on any specific flow — BUI has extensive docs/*.md.
+  - path: .claude/knowledge/i18n.yaml
+    when: "Change text shown in booking flow" — routing between this repo and nelson-client-configuration.
+  - path: .claude/knowledge/deploys.yaml
+    when: Build + deploy (per-client bundles, CodeBuild pipelines).
+
+absolute_rules:
+  - React 17 + TypeScript 4.6.3 + @chakra-ui/react 1.8.1 are pinned. Upgrading ANY will break the build. See README.
+  - All edits are PR → review → merge → deploy. Nelson Assistant has no direct write path.

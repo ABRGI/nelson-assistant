@@ -1,0 +1,66 @@
+schema: 1
+node: db/relations
+purpose: Core ER relationships. Shortcut to know which JOIN gets from A → B.
+related: [.claude/knowledge/db/schema.yaml]
+
+core_entity_graph: |
+  hotel_chain (1) ← hotel (N) ← room (N)
+                                 └─ product_id → product
+  hotel (1) ← reservation (N) ← reservation_product (N) → product
+                                                        └─ room_id → room
+  reservation (1) ← payment (N)
+  customer (1) ← reservation (N)    # customer_id is nullable
+  hotel (1) ← maintenance_reservation (N) → maintenance_reservation_category
+  allotment (1) ← hotel_allotment (N) ← hotel_allotment_date (N)
+  allotment (1) ← voucher (N)        # allotment_id on voucher is nullable
+  member (1) ← customer (N)          # via member_id on customer
+  room (1) ← room_clean_event (N)
+
+common_joins:
+
+  reservation_with_hotel:
+    purpose: Most ops questions join these two.
+    sql: |
+      FROM reservation r JOIN hotel h ON r.hotel_id = h.id
+
+  reservation_with_customer:
+    sql: |
+      FROM reservation r LEFT JOIN customer c ON r.customer_id = c.id
+
+  reservation_with_products_and_rooms:
+    purpose: Room assignment + products ordered per reservation.
+    sql: |
+      FROM reservation r
+        JOIN reservation_product rp ON rp.reservation_id = r.id
+        LEFT JOIN room rm            ON rp.room_id = rm.id
+        LEFT JOIN product p          ON rp.product_id = p.id
+
+  hotel_with_rooms:
+    sql: |
+      FROM hotel h JOIN room rm ON rm.hotel_id = h.id
+
+  reservation_with_payments:
+    sql: |
+      FROM reservation r LEFT JOIN payment p ON p.reservation_id = r.id
+
+  voucher_with_allotment:
+    sql: |
+      FROM voucher v LEFT JOIN allotment a ON v.allotment_id = a.id
+
+  maintenance_with_category:
+    sql: |
+      FROM maintenance_reservation m
+        JOIN maintenance_reservation_category c ON m.category_id = c.id
+
+date_range_overlap:
+  purpose: "All reservations that touch a given date range (not strictly contained)."
+  sql: |
+    WHERE r.start_date < $end_exclusive
+      AND r.end_date   > $start_inclusive
+
+point_in_time_in_house:
+  purpose: Guests currently in the hotel.
+  sql: |
+    WHERE r.state = 'CONFIRMED'
+      AND r.start_date <= CURRENT_DATE
+      AND r.end_date   >  CURRENT_DATE

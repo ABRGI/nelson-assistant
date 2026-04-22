@@ -1,0 +1,19 @@
+schema: 1
+node: deploys
+purpose: Deployment + local run.
+
+prod_shape:
+  lambdas: lambda_src/listtenants.js, lambda_src/managetenantprops.js (one Lambda each; API Gateway routes).
+  ci: /aws/codebuild/ProdTenantManagementService
+  staging_ci: /aws/codebuild/TestTenantManagementService
+  data: DynamoDB `nelson-tenants` + S3 `nelson-tenant-properties`
+
+local_dev:
+  remote_proxy: npm run remote    # proxies to the deployed Lambda via index_remote.js
+  local: |
+    ACCESSKEY=... SECRETKEY=... LOCAL=true ENV_REGION=eu-central-1 \
+    TENANT_TABLE=nelson-tenants TENANT_PROPS_BUCKET=nelson-tenant-properties \
+    npx nodemon index_local.js
+
+env_vars:
+  ENV_REGION, TENANT_TABLE, TENANT_PROPS_BUCKET, LOCAL, ACCESSKEY, SECRETKEY

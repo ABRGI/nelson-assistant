@@ -1,0 +1,68 @@
+schema: 1
+node: hotel-identity
+purpose: The single biggest footgun when calling Nelson APIs. Different endpoints take different hotel identifiers. Substituting one for the other 404s or 400s.
+related: [.claude/knowledge/bugs.yaml, .claude/knowledge/endpoints/hotels.yaml]
+
+two_identifiers:
+  label:
+    aka: [shortName, hotelLabel, code]
+    type: string
+    examples: [HKI2, HEL1, TMP1, POR2]
+    origin: hotel.label column in the `hotel` table
+  numeric_id:
+    aka: [hotelId, hotel.id]
+    type: long
+    origin: hotel.id column (PK) in the `hotel` table
+
+which_endpoint_uses_which:
+  label_endpoints:
+    - GET /api/prices/{label}/{start}/{end}/{rooms}/{adults}/{children}/
+    - GET /api/voucher/discount/check/{label}/{start}/{end}/{rooms}/{adults}/{children}/{code}
+    - GET /api/doors/{label}
+    - GET /api/management/secure/lock-ui/axis/accessDoorList/{label}
+    - GET /api/management/secure/lock-ui/axis/credential/{label}/{token}
+    - GET /api/management/secure/hotel-management/{label}
+    - PUT /api/management/secure/hotel-management/{label}
+    - GET /api/management/secure/door-event/{label}
+    - GET /api/bui2/starRating?hotelLabel=...
+
+  numeric_id_endpoints:
+    - GET /api/availability-check?hotel={hotelId}
+    - GET /api/management/secure/availability-check?hotel={hotelId}
+    - GET /api/management/secure/pricing_rules/{hotelId}/{roomType}
+    - GET /api/management/secure/secif_pricings/{hotelId}/{start}/{end}
+    - POST /api/management/secure/secif_pricings/{hotelId}
+    - GET /api/management/secure/pet_friendly_pricings/{hotelId}/{start}/{end}
+    - GET /api/management/secure/hotels/{id}/usage
+    - GET /api/management/secure/usage/hotels/{id}/availability-stat
+    - POST /api/management/secure/hotels/{id}/change-room
+    - POST /api/management/secure/hotels/{id}/swap-room
+    - GET /api/management/secure/eci_lco/hotels/{id}/eci-lco-stat
+    - GET /api/management/secure/channel/hotels/{id}/availability-stat
+    - GET /api/management/secure/allotment/{hotelId}/available-rooms
+    - GET /api/m_app/prices/{hotelId}/{start}/{end}/{rooms}/{adults}/{children}
+
+  both_forms_possible:
+    # Some search endpoints accept either form via query params — pick the one the schema asks for.
+    - GET /api/management/secure/reservations (accepts hotelIds=<csv of numeric ids>)
+
+naming_trap_in_source:
+  where: domain/src/main/java/nelson/api/Urls.java
+  observation: Several URL templates name the hotel segment `{nelsonHotelId}`. Despite the name, the @PathVariable in the controller binds to `String hotelLabel` (e.g. BookingUIController.getRoomPrices). The segment IS the label.
+  implication: Don't trust the variable name in the URL template — check the @PathVariable type + controller logic. When in doubt, the test is: does it accept "HKI2"? → it's a label.
+
+resolution_strategy:
+  - step: 1
+    do: If you don't already know both identifiers for the hotel, call GET /api/hotels ONCE and find the object.
+  - step: 2
+    do: Hotel object contains BOTH `id` (numeric) and `label` (string). Cache both in working memory for the rest of the conversation.
+  - step: 3
+    do: Use the identifier that matches the endpoint's path. Never substitute.
+  - step: 4
+    do: If a call 404s or 400s and the path has a hotel segment, try the other identifier — it's the most common cause.
+
+user_speak_vs_technical:
+  users_say: "Helsinki", "HKI2", "HEL1", "Tampere 1", "Porvoo 2"
+  normalise_to:
+    - Prefer label for path construction (it's stable, short, and users recognise it).
+    - For endpoints that demand numeric id, look up via label → id from GET /api/hotels.
