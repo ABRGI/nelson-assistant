@@ -1,4 +1,4 @@
-import { query, tool, createSdkMcpServer, type Options, type SDKMessage, type SpawnOptions, type SpawnedProcess } from '@anthropic-ai/claude-agent-sdk';
+import { query, tool, createSdkMcpServer, type Options, type SDKMessage, type SpawnOptions, type SpawnedProcess, type ModelUsage } from '@anthropic-ai/claude-agent-sdk';
 import { spawn } from 'node:child_process';
 import type { WebClient } from '@slack/web-api';
 import { readFile } from 'node:fs/promises';
@@ -32,14 +32,29 @@ export interface RunAgentArgs {
   abortSignal?: AbortSignal;
 }
 
+type ModelUsageForChatlog = Pick<ModelUsage, 'inputTokens' | 'outputTokens' | 'cacheReadInputTokens' | 'cacheCreationInputTokens' | 'costUSD'>;
+
+export interface RunAgentCostBreakdown {
+  totalCostUsd: number;
+  numTurns: number;
+  durationMs: number;
+  durationApiMs: number;
+  deepResearchCalls: number;
+  modelUsage: Record<string, ModelUsageForChatlog>;
+}
+
 export interface RunAgentResult {
   finalText: string;
   stopReason: string | undefined;
   sessionId: string | undefined;
+  cost: RunAgentCostBreakdown | undefined;
 }
+
+const DEEP_RESEARCH_MAX_CALLS_PER_JOB = 1;
 
 export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
   const seed = await loadSystemSeed(args.project, args.tenant, args.psqlReadOnlyUrl, args.knowledgeInjection);
+  let deepResearchCalls = 0;
   const options: Options = {
     cwd: args.cwd,
     model: args.sonnetModelId,
@@ -117,7 +132,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
           ),
           tool(
             'escalate_to_human',
-            'Call this when you cannot safely complete the task: missing permission, destructive action, ambiguous scope, or something that requires human judgment. The designated human will be tagged in Slack.',
+            'Call this ONLY for actions a human must perform: destructive writes (edits to DB, calls to non-GET APIs, emails/SMS to guests, credential or door-code changes), missing permission for a write, or an explicit support-playbook that says escalate. DO NOT escalate for read-only questions — if a read-side request is ambiguous or missing scope, REPLY in Slack with a short clarifying question instead (that is not an escalation). DO NOT escalate because you cannot find the data; try the alternative endpoints listed in tasks.yaml / retry-policy.yaml, or switch to psql, then say "I could not find it" and stop — don\'t page a human for a lookup.',
             EscalateInputSchema.shape,
             async (input) => {
               const res = await escalateToHuman(
@@ -136,9 +151,22 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
           ),
           tool(
             'deep_research',
-            'EXPENSIVE FALLBACK. Allocates a repo worktree and reads / greps source files to answer a question the pre-injected knowledge leaves cannot. Use SPARINGLY — the knowledge bundle should answer 95%+ of questions. Call this only after the knowledge leaves have been consulted and came up short, with a focused list of file paths + optional grep patterns. Returns raw file excerpts with line numbers.',
+            `EXPENSIVE FALLBACK — hard-capped at ${DEEP_RESEARCH_MAX_CALLS_PER_JOB} call per question. Allocates a repo worktree and reads/greps source files to answer a question the pre-injected knowledge leaves cannot. Use SPARINGLY — the knowledge bundle should answer 95%+ of questions. Call this AT MOST ONCE per turn: pack all the file paths and grep patterns you need into that single call. A second call will be REJECTED. After you get results, answer from what you have or say "I don't know" and escalate — do not retry.`,
             DeepResearchInputSchema.shape,
             async (input) => {
+              if (deepResearchCalls >= DEEP_RESEARCH_MAX_CALLS_PER_JOB) {
+                logger.warn(
+                  { tenantId: args.tenant.tenantId, project: input.project, attempt: deepResearchCalls + 1 },
+                  'deep_research call rejected — per-job cap reached',
+                );
+                return {
+                  content: [{
+                    type: 'text',
+                    text: `deep_research: REJECTED — you have already used your ${DEEP_RESEARCH_MAX_CALLS_PER_JOB} deep_research call for this question. Answer from the knowledge leaves and the previous deep_research result. If you truly cannot answer, say "I don't know" and call mcp__nelson__escalate_to_human — do NOT attempt another source read.`,
+                  }],
+                };
+              }
+              deepResearchCalls += 1;
               const res = await runDeepResearch(
                 { worktrees: args.worktrees, defaultBranch: args.defaultBranch },
                 input,
@@ -160,6 +188,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
   let finalText = '';
   let stopReason: string | undefined;
   let sessionId: string | undefined;
+  let cost: RunAgentCostBreakdown | undefined;
 
   for await (const message of iter) {
     args.onEvent(message);
@@ -176,6 +205,14 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
       if (message.subtype === 'success' && 'result' in message && message.result) {
         finalText = message.result;
       }
+      cost = {
+        totalCostUsd: message.total_cost_usd,
+        numTurns: message.num_turns,
+        durationMs: message.duration_ms,
+        durationApiMs: message.duration_api_ms,
+        deepResearchCalls,
+        modelUsage: { ...(message.modelUsage ?? {}) },
+      };
     }
   }
 
@@ -183,23 +220,28 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
     { tenantId: args.tenant.tenantId, project: args.project, stopReason, sessionId },
     'agent run complete',
   );
-  return { finalText, stopReason, sessionId };
+  return { finalText, stopReason, sessionId, cost };
 }
 
 async function loadSystemSeed(project: string, tenant: ClientRecord, psqlReadOnlyUrl?: string, knowledgeInjection?: string): Promise<string> {
   const parts: string[] = [
     `You are Nelson — a friendly, concise hotel operations assistant answering a Slack message from a user on tenant *${tenant.displayName}* (tenantId: ${tenant.tenantId}).`,
-    `Your grounded knowledge about the Nelson ecosystem (${project} + sibling repos) is pre-injected below as yaml leaves. Treat them as your SOURCE OF TRUTH. Quote paths, endpoints, rules, enums, schemas and SQL directly from those leaves. If the leaves don't answer the question, call mcp__nelson__deep_research ONCE with a focused read/grep — that tool is the only way back into the source tree and is expensive by design.`,
+    `Your grounded knowledge about the Nelson ecosystem (${project} + sibling repos) is pre-injected below as yaml leaves. Treat them as your SOURCE OF TRUTH. Quote paths, endpoints, rules, enums, schemas and SQL directly from those leaves. If the leaves don't answer the question, use mcp__nelson__deep_research — see the tool description for the one-call cap.`,
     `Tone and style:`,
     `- Respond like a knowledgeable hotel ops colleague, not a developer documenting an API.`,
     `- Be direct and concise. Lead with the answer, then add context if needed.`,
     `- Never expose raw API response structures, error stack traces, or implementation details to the user.`,
     `- When a follow-up question refers to a previous topic (e.g. "what about POR2?"), always carry the full context of the conversation — treat it as if the user asked the complete question again.`,
+    `- Treat short user replies ("all", "HKI2", "yes", "last week") as answers to the bot's immediately preceding question in the thread. NEVER re-ask a clarifying question that was already asked and answered earlier in the same thread. If you still lack a parameter, default to a reasonable interpretation (or "all hotels" if the user literally said "all") and show it in the Assumed footer — do not bounce the question back.`,
     `Grounding rule (ABSOLUTE): Every factual claim must come from one of (a) the pre-injected knowledge below, (b) a tool result in this turn, (c) the preceding Slack conversation. NEVER answer from pre-training memory about Nelson — your training is general hotel industry knowledge, Nelson is specific and often different. If you can't ground a claim, say "I don't know" or escalate. No fabricated file paths, no made-up endpoints, no invented rules.`,
-    `Source citation (HARD RULE): Every factual reply must end with an italic "Source:" footer naming the endpoint + key query params + JSON field paths OR the SQL query OR the knowledge leaf path. If any parameter was inferred (date year, occupancy defaults, hotel pick, tenant), add an italic "Assumed:" footer above the Source footer.`,
+    `Source citation (HARD RULE): Every factual reply must end with an italic "Source:" footer naming the endpoint + key query params + JSON field paths, OR the DB table + a one-line paraphrase of the query (NEVER the raw SQL text), OR the knowledge leaf path. If any parameter was inferred (date year, occupancy defaults, hotel pick, tenant), add an italic "Assumed:" footer above the Source footer.`,
+    `NEVER expose to the user: raw SQL query text, source-tree file:line paths, class/function names, code snippets, stack traces, or implementation internals. Cite the concept ("per the ReservationService underage rule") not the code. Full SQL/source details belong in trace logs, not the Slack reply.`,
+    `Default breakdown on quantitative replies (HARD RULE — this WINS over any urge to ask for clarification on the same dimensions): when a factual answer includes counts, totals, revenue, or occupancy, break the answer down by EVERY relevant dimension the data carries — hotel, booking channel, room type, and date scope — unless the user explicitly asked for a single scalar. For "reservations today" style questions, ALWAYS show all three cuts side-by-side in the same reply: "created today" (booking_date = today), "arriving today" (arrival_date = today), and "staying tonight" (arrival_date ≤ today < departure_date). Never pick one cut and ask which one they meant — just show all three and let them read the one they care about. Similarly split per-hotel + per-channel + per-room-type. If a dimension isn't in the source, state "(not available in this source)" — never fabricate. See knowledge/nelson/output-format.yaml for the exact structure.`,
+    `Clarify before answering (HARD RULE — USE SPARINGLY): ask ONE short clarifying question ONLY when the ambiguity is NOT resolvable by showing a breakdown and WOULD materially change the answer (e.g. unknown hotel scope when the roster has 10 hotels, or "last quarter" = calendar Q1 vs rolling 90 days). Do NOT clarify for dimensions that the default-breakdown rule already handles (reservation-vs-arrival-vs-stay, per-channel, per-room-type). Do NOT re-ask a clarification that was already asked and answered earlier in this same thread — carry the answer forward. Clarifying ≠ escalating — DO NOT call escalate_to_human for read-side ambiguity. Only use escalate_to_human for destructive actions a human must perform.`,
     `Read-only authority: You must NEVER call non-GET HTTP methods on Nelson APIs, NEVER write to the DB, NEVER edit source code, NEVER send emails/SMS to guests, NEVER rotate credentials or door codes. Destructive actions go through mcp__nelson__escalate_to_human first — no dry runs, no "let me just check".`,
     `Retry budget: Max 3 unsuccessful API attempts per question (4xx/5xx or empty/wrong-shape 2xx). After that: switch to psql if the knowledge leaves list an SQL path; swap hotel identifier (label↔id) if the call took a hotel segment; otherwise escalate. Never prefix-loop, never retry a 405 with the same method.`,
     `Format answers for Slack mrkdwn: *bold*, bullet lists with •, \`code\`. No Markdown tables (| col |) — Slack does not render them.`,
+    `Keep replies under 3500 characters (Slack's hard limit forces ugly chunking above ~4000). If the data is long (e.g. >20 reservations or >20 rooms), DO NOT list every row — summarise by the relevant dimensions (per hotel, per channel, per room-type, per state) with counts, then offer: "want me to list specific ones? tell me which slice.". Quote individual rows only when the user explicitly asked for them. Running totals + distribution beats a verbatim dump every time.`,
     ...(psqlReadOnlyUrl
       ? [`A read-only PostgreSQL observer connection is available at PSQL_READ_ONLY_URL. Use \`psql "$PSQL_READ_ONLY_URL" -c "..."\` for direct DB queries when the API cannot serve the data. SELECT only.`]
       : []),

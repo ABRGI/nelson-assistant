@@ -29,6 +29,7 @@ import { HaikuClassifier } from './agent/classifier.js';
 import { ConfidenceScorer } from './agent/confidence.js';
 import { ChatLog } from './observability/chatlog.js';
 import { loadKnowledgeBundle } from './knowledge/loader.js';
+import { loadTenantHotelsFromBundle } from './knowledge/tenant-hotels.js';
 import { LeafPicker } from './knowledge/picker.js';
 
 const DEFAULT_PROJECT = 'nelson';
@@ -61,11 +62,18 @@ async function main(): Promise<void> {
   await worktrees.init();
 
   const knowledge = await loadKnowledgeBundle(KNOWLEDGE_ROOT);
+  const tenantHotels = loadTenantHotelsFromBundle(knowledge);
+  logger.info(
+    { count: tenantHotels.hotels.length, ambiguousCities: tenantHotels.ambiguousCities },
+    'tenant hotel roster loaded',
+  );
 
   const bedrock = new BedrockRuntimeClient(awsClientConfig(config));
   const classifier = new HaikuClassifier({
     haikuModelId: config.BEDROCK_CLASSIFIER_MODEL_ID,
     client: bedrock,
+    knownHotels: tenantHotels.hotels,
+    ambiguousCities: tenantHotels.ambiguousCities,
   });
   const leafPicker = new LeafPicker({
     modelId: config.BEDROCK_LEAF_PICKER_MODEL_ID,

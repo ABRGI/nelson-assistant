@@ -10,7 +10,7 @@ import { logger } from '../observability/logger.js';
 import type { ChatLog } from '../observability/chatlog.js';
 import { ThreadProgressMessage } from '../slack/renderer.js';
 import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
-import type { HaikuClassifier } from './classifier.js';
+import type { HaikuClassifier, ClassifierResult } from './classifier.js';
 import type { ConfidenceScorer } from './confidence.js';
 import type { LeafPicker } from '../knowledge/picker.js';
 import type { KnowledgeBundle } from '../knowledge/loader.js';
@@ -83,7 +83,10 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       channel: job.channel,
       source: job.source,
       threadTs: job.threadTs,
-      ...(job.threadTs ? { excludeTs: job.threadTs } : {}),
+      // Exclude only the current message (we pass it separately as newMessage).
+      // Using threadTs here was wrong for replies in a thread — it stripped the
+      // user's original question while keeping the reply.
+      excludeTs: job.userMessageTs,
     });
 
     // Kick off the Cognito refresh alongside the classifier so the ~200-500ms
@@ -98,11 +101,22 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       (err: unknown) => ({ ok: false as const, err }),
     );
 
-    const verdict = await deps.classifier.classify(job.text, history);
-    logEvent('classifier_verdict', verdict.type === 'conversational'
-      ? { type: 'conversational', reply: verdict.reply }
-      : { type: 'data_query', ...(verdict.reason ? { reason: verdict.reason } : {}) });
-    if (verdict.type === 'conversational') {
+    const rawVerdict = await deps.classifier.classify(job.text, history);
+    // Safety net: if the classifier emits a conversational reply that promises
+    // to "run / check / pull / fetch / look up" data — it has no tools, so the
+    // promise would be a dead end. Coerce to data_query so Sonnet actually
+    // runs. The classifier prompt forbids these phrases but the guard stays
+    // here as a hard defense.
+    const verdict = coercePromisesToDataQuery(rawVerdict);
+    logEvent('classifier_verdict', {
+      ...(verdict.type === 'data_query'
+        ? { type: 'data_query', ...(verdict.reason ? { reason: verdict.reason } : {}), ...(verdict.effective_question ? { effective_question: verdict.effective_question } : {}) }
+        : verdict.type === 'conversational'
+          ? { type: 'conversational', reply: verdict.reply }
+          : { type: 'needs_clarification', reply: verdict.reply, ...(verdict.reason ? { reason: verdict.reason } : {}) }),
+      ...(verdict.usage ? { usage: verdict.usage } : {}),
+    });
+    if (verdict.type === 'conversational' || verdict.type === 'needs_clarification') {
       await tokensSettled;
       await slack.chat.postMessage({
         channel: job.channel,
@@ -110,9 +124,15 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         text: verdict.reply,
         mrkdwn: true,
       });
-      await swapReaction(slack, job, looksLikeQuestion(verdict.reply) ? 'question' : 'white_check_mark');
-      logEvent('agent_reply', { path: 'conversational', reply: verdict.reply });
-      logger.info({ slackUserId: job.userId, reason: 'conversational' }, 'job completed (no agent run)');
+      const reaction = verdict.type === 'needs_clarification' || looksLikeQuestion(verdict.reply)
+        ? 'question'
+        : 'white_check_mark';
+      await swapReaction(slack, job, reaction);
+      logEvent('agent_reply', { path: verdict.type, reply: verdict.reply });
+      logger.info(
+        { slackUserId: job.userId, reason: verdict.type },
+        'job completed (no agent run)',
+      );
       return;
     }
 
@@ -159,16 +179,34 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
     }
     const tokens = tokenResult.tokens;
 
-    const question = renderHistoryForAgentPrompt(history, job.text);
+    // The effective question is either the user's literal text OR, when the
+    // classifier recognised a short answer to its own prior clarification, the
+    // reconstructed full question. Using the reconstructed form keeps the leaf
+    // picker on-topic and stops Sonnet from re-asking the same question.
+    const effectiveText = verdict.type === 'data_query' && verdict.effective_question
+      ? verdict.effective_question
+      : job.text;
+    if (effectiveText !== job.text) {
+      logger.info(
+        { original: job.text, reconstructed: effectiveText },
+        'classifier reconstructed user question from clarification answer',
+      );
+    }
+    const question = renderHistoryForAgentPrompt(history, effectiveText);
 
     // Hot path: pick 1-3 knowledge leaves, pre-inject them into the system
     // prompt. No worktree allocation, no source-code read on the happy path.
     // deep_research is the only path back into source and it allocates its own
     // worktree on demand inside the tool handler.
     progress.update(':books: Loading the right playbook…');
-    const picked = await deps.leafPicker.pick(job.text);
+    const picked = await deps.leafPicker.pick(effectiveText);
     const knowledgeInjection = renderInjection(deps.knowledge, picked.leaves);
-    logEvent('tool_use', { name: 'leaf_picker', input: { question: job.text }, output: { leaves: picked.leaves, reason: picked.reason } }, tenant.tenantId);
+    logEvent('tool_use', {
+      name: 'leaf_picker',
+      input: { question: effectiveText, ...(effectiveText !== job.text ? { originalUserText: job.text } : {}) },
+      output: { leaves: picked.leaves, reason: picked.reason },
+      ...(picked.usage ? { usage: picked.usage } : {}),
+    }, tenant.tenantId);
     progress.update(':brain: Thinking through your question…');
     try {
       let lastToolName: string | undefined;
@@ -231,10 +269,21 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         stopReason: result.stopReason,
         sessionId: result.sessionId,
         needsInput,
+        ...(result.cost ? { cost: result.cost } : {}),
         ...(confidence ? { confidence } : { confidence: null, confidenceSkippedReason: 'clarification_request_no_citations_needed' }),
       }, tenant.tenantId);
       logger.info(
-        { tenantId: tenant.tenantId, project: deps.defaultProject, lastToolName, stopReason: result.stopReason },
+        {
+          tenantId: tenant.tenantId,
+          project: deps.defaultProject,
+          lastToolName,
+          stopReason: result.stopReason,
+          ...(result.cost ? {
+            totalCostUsd: result.cost.totalCostUsd,
+            numTurns: result.cost.numTurns,
+            deepResearchCalls: result.cost.deepResearchCalls,
+          } : {}),
+        },
         'job completed',
       );
       await deps.bindings.markUsed(job.userId).catch(() => undefined);
@@ -341,6 +390,42 @@ function looksLikeClarificationOnly(text: string): boolean {
 function looksLikeQuestion(text: string): boolean {
   const trimmed = text.trim().replace(/[`*_~]+$/, '').trimEnd();
   return trimmed.endsWith('?');
+}
+
+// Phrases the classifier sometimes emits in a "conversational" reply that
+// imply it is about to run a query — which it can't. When we see one, coerce
+// to data_query so Sonnet actually runs and the user isn't left waiting on a
+// promise the bot can never fulfil.
+const PROMISE_PATTERNS = [
+  /let me (run|check|query|pull|fetch|look|verify|re[\s-]?run|try)/i,
+  /i['']?ll (run|check|query|pull|fetch|look|verify|re[\s-]?run|try)/i,
+  /one\s+(sec|moment|minute)[,.\s]/i,
+  /hold on[,.\s]/i,
+  /on it[,.\s]/i,
+  /thanks for catching that[ \-—,]*let me/i,
+  /i['']?m (going to|about to|gonna) (run|check|query|pull|fetch)/i,
+  /let me (re)?(-)?run the corrected query/i,
+];
+
+function containsUnkeepablePromise(text: string): boolean {
+  if (!text) return false;
+  return PROMISE_PATTERNS.some((re) => re.test(text));
+}
+
+function coercePromisesToDataQuery(verdict: ClassifierResult): ClassifierResult {
+  if (verdict.type !== 'conversational') return verdict;
+  if (!containsUnkeepablePromise(verdict.reply)) return verdict;
+  logger.warn(
+    { reply: verdict.reply.slice(0, 200) },
+    'classifier conversational reply promised work it cannot do — coercing to data_query',
+  );
+  const coerced: ClassifierResult = {
+    type: 'data_query',
+    reason: 'coerced_from_promise_conversational',
+    effective_question: verdict.reply,
+    ...(verdict.usage ? { usage: verdict.usage } : {}),
+  };
+  return coerced;
 }
 
 async function swapReaction(slack: WebClient, job: AskJob, next: string): Promise<void> {

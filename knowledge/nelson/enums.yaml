@@ -1,31 +1,94 @@
 schema: 1
 node: enums
-purpose: Valid enum values. Invalid values → 400. Don't guess — look up here.
-related: [.claude/knowledge/endpoints/reservations.yaml, .claude/knowledge/tasks.yaml]
+purpose: Valid enum values. Invalid values → 400 at the API. Don't guess — look up here.
+when_to_load: Whenever the agent has to compose a filter, a state check, a type path param, or interpret a response field that's a known enum.
+related: [.claude/knowledge/endpoints/reservations.yaml, .claude/knowledge/tasks.yaml, .claude/knowledge/db/schema.yaml]
 
-ReservationState: [INITIAL, CONFIRMED, PENDING_CONFIRMATION, CANCELLED, BLOCKED, CHECK_IN_INCOMPLETE]
-ReservationType:
-  NORMAL: 1
-  GROUP: 2
-  CONTRACT: 3
-BookingChannel: [NELSON, BOOKINGCOM, EXPEDIA, LEGACY, MOBILEAPP]
-ChangeType: [NO_CHANGE, MINOR_CHANGE, EXTEND, SHORTEN, MOVE]
-CancellationReason: [TRIP_GOT_CANCELLED, FOUND_BETTER_RATE_AT_OTHER_HOTEL, FOUND_BETTER_RATE_AT_OMENA, OTHER]
-HotelChain: [OMENAHOTELS, SALOHOTELS, USHOTELS, ECHOTELS]
+authority_and_freshness:
+  # Refreshed via the `/train` skill step "refresh enums from DB" on 2026-04-22.
+  # Values marked ✓DB are DISTINCT-verified against production DB via the
+  # observer connection. Values marked ✓source come from the nelson repo
+  # (application enums not backed by pg_enum / not present in DB).
+  last_db_refresh: 2026-04-22
+  connection: observer_user via PSQL_READ_ONLY_URL (nelson schema)
+  pg_enum_note: |
+    Only 5 PostgreSQL-native enums exist in the `nelson` schema
+    (workflow_status, action_type, room_clean_status_event_*, member_deletion_status).
+    All "business" enums (ReservationState, BookingChannel, ProductType, ChangeType, RoomType)
+    are stored as varchar columns and validated at the application layer — so the
+    authoritative list is DISTINCT(column) from production data.
+
+# ── Reservations ─────────────────────────────────────────────────────────────
+ReservationState:                      # ✓DB (DISTINCT from nelson.reservation.state)
+  - INITIAL
+  - PENDING_CONFIRMATION
+  - CONFIRMED
+  - BLOCKED
+  - CANCELLED
+ReservationType:                       # ✓DB (integer column, counts shown here)
+  1: NORMAL                            # ~1.39M rows
+  2: GROUP                             # ~5k rows
+  3: CONTRACT                          # ~6.4k rows
+ChangeType:                            # ✓DB (DISTINCT from nelson.reservation.change_type)
+  - EXTEND
+  - MINOR_CHANGE
+  - MOVE
+  - SHORTEN
+  # Note: "NO_CHANGE" appears in source code / DTOs as a sentinel but never
+  # lands in the DB column. If you filter by change_type, stick to the 4 above.
+BookingChannel:                        # ✓DB (DISTINCT from nelson.reservation.booking_channel)
+  - NELSON                             # direct via MUI / BUI
+  - BOOKINGCOM
+  - EXPEDIA
+  - LEGACY                             # legacy PMS migration data
+  - MOBILEAPP                          # Omena guest app
+CancellationReason:                    # ✓source (application DTO, no DB DISTINCT sampled)
+  - TRIP_GOT_CANCELLED
+  - FOUND_BETTER_RATE_AT_OTHER_HOTEL
+  - FOUND_BETTER_RATE_AT_OMENA
+  - OTHER
+
+# ── Products & rooms ─────────────────────────────────────────────────────────
+ProductType:                           # ✓DB (DISTINCT from nelson.product.type)
+  - ACCOMMODATION                      # 21 rows — one per room-type×hotel
+  - BREAKFAST
+  - BROKEN_ITEM
+  - COMPENSATE
+  - ECI                                # early check-in
+  - EXTRA_BED
+  - FENNOA_ADDITIONAL
+  - GOLF
+  - INVOICE_SURCHARGE
+  - LCO                                # late check-out
+  - OTHER
+  - PET_FRIENDLY
+  - REFUNDED_GIFT_CARD
+  - SAMEDATE_ECI_FLEX
+
 RoomType:
-  - WINDOWLESS
-  - STANDARD
-  - SUITE
-  - SUPERIOR
-  - SINGLE
-  - SINGLE_TV_LESS
-  - STANDARD_TV_LESS
-  - CELL_ROOM_SINGLE
-  - CELL_ROOM
-  - STANDARD_SHARED_BATHROOM
-  - STANDARD_PLUS
-CleanStatus: [CLEAN, DIRTY, INTERMEDIATE]
-EventSource_for_clean:
+  # The nelson.room table has NO `type` / `room_type` column. A room's "type"
+  # is the `type` of its associated product (room.product_id → product.type).
+  # In Prod Omena only ACCOMMODATION products back rooms (705 available rooms,
+  # all ACCOMMODATION). The labels below are the room-SIZE classes used in
+  # pricing rules and APIs — they surface via the product NAME / product.label
+  # and in API responses (RoomPrice.roomType), not as a DB column.
+  # ✓source from reservation-core enums.
+  room_size_classes:
+    - WINDOWLESS
+    - STANDARD
+    - SUITE
+    - SUPERIOR
+    - SINGLE
+    - SINGLE_TV_LESS
+    - STANDARD_TV_LESS
+    - CELL_ROOM_SINGLE
+    - CELL_ROOM
+    - STANDARD_SHARED_BATHROOM
+    - STANDARD_PLUS
+
+# ── Cleaning & room state ────────────────────────────────────────────────────
+CleanStatus: [CLEAN, DIRTY, INTERMEDIATE]  # ✓DB (pg_enum room_clean_status_event_status)
+EventSource_for_clean:                     # ✓DB (pg_enum room_clean_status_event_source)
   - SAP
   - MUI
   - HIBOX
@@ -34,29 +97,24 @@ EventSource_for_clean:
   - MAINTENANCE_RESERVATION_STARTS
   - MAINTENANCE_RESERVATION_ENDS
   - DAILY_SCHEDULER
-LockSystem: [AXIS, AXBASE, SMARTKEY, VAKA, VANDERBILT]
-AxisAccessProfileTokenTypes: [basement, main, inner, floor, room, gate, elevator, stairwell, other]
 
-ProductType:
-  - ACCOMMODATION
-  - BREAKFAST
-  - EXTRA_BED
-  - ECI                    # early check-in
-  - LCO                    # late check-out
-  - SAMEDATE_ECI_FLEX
-  - GOLF
-  - PET_FRIENDLY
-  - BROKEN_ITEM
-  - OTHER
-  - COMPENSATE
-  - FENNOA_ADDITIONAL
-  - INVOICE_SURCHARGE
-  - REFUNDED_GIFT_CARD
-  - EXTRA
+# ── Ops workflow (nflow) ─────────────────────────────────────────────────────
+WorkflowStatus: [created, executing, inProgress, finished, manual]    # ✓DB (pg_enum workflow_status)
+WorkflowActionType: [stateExecution, stateExecutionFailed, recovery, externalChange]  # ✓DB (pg_enum action_type)
+MemberDeletionStatus: [REQUESTED, CANCELLED, DELETED, FAILED]         # ✓DB (pg_enum member_deletion_status)
 
-UserRole: [NELSON_MANAGER, CLIENT_ADMIN, CUSTOMER_SERVICE, REVENUE_MANAGER, ACCOUNTING, CLEANER]
+# ── Infra / building access ──────────────────────────────────────────────────
+LockSystem: [AXIS, AXBASE, SMARTKEY, VAKA, VANDERBILT]                # ✓source
+AxisAccessProfileTokenTypes: [basement, main, inner, floor, room, gate, elevator, stairwell, other]  # ✓source
 
-PaymentProvider:
+# ── Chain / tenants ──────────────────────────────────────────────────────────
+HotelChain: [OMENAHOTELS, SALOHOTELS, USHOTELS, ECHOTELS]  # ✓source (DB has 1 row in nelson.hotel_chain = Omena)
+
+# ── People ───────────────────────────────────────────────────────────────────
+UserRole: [NELSON_MANAGER, CLIENT_ADMIN, CUSTOMER_SERVICE, REVENUE_MANAGER, ACCOUNTING, CLEANER]  # ✓source
+
+# ── Payments ─────────────────────────────────────────────────────────────────
+PaymentProvider:                       # ✓source
   - PAYTRAIL
   - PAYTRAIL_2
   - TYL
@@ -69,21 +127,24 @@ PaymentProvider:
   - BANK_TRANSFER
   - EXPEDIA
   - OTHER
-PaymentStatus: [PAYMENT_INITIALIZED, PAYMENT_FAILED, REFUND_CREATED, REFUND_ERROR, MANUAL_REFUND, DRAFT, COMPLETED]
-FennoaPaymentStatus: [UNPAID, PAID, OVERDUE, SENT, NOT_SENT, REFUNDED, ERROR, CONSOLIDATED_INVOICE]
+PaymentStatus: [PAYMENT_INITIALIZED, PAYMENT_FAILED, REFUND_CREATED, REFUND_ERROR, MANUAL_REFUND, DRAFT, COMPLETED]  # ✓source
+FennoaPaymentStatus: [UNPAID, PAID, OVERDUE, SENT, NOT_SENT, REFUNDED, ERROR, CONSOLIDATED_INVOICE]                # ✓source
 
-Channel_numeric:
+# ── Channels ─────────────────────────────────────────────────────────────────
+Channel_numeric:                       # ✓source (channel_event / channel_manager numeric ids)
   BOOKINGCOM: 1
   EXPEDIA: 2
   SOLINOR: 3
   GOOGLE_HOTEL_CENTER: 4
-ChannelEventType: [AVAILABILITY, BOOKING_CONFIRM, FETCH_RESERVATION, SYNC_RESERVATION]
-ChannelEventStatus: [PENDING, PROCESSING, SUCCESS, FAILURE]
+ChannelEventType: [AVAILABILITY, BOOKING_CONFIRM, FETCH_RESERVATION, SYNC_RESERVATION]  # ✓source
+ChannelEventStatus: [PENDING, PROCESSING, SUCCESS, FAILURE]                             # ✓source
 event_cleanup_days: 30
 
-SupportedLanguages: [fi, en, sv, ru, et]    # note: et falls back to en in some templates
+# ── i18n ─────────────────────────────────────────────────────────────────────
+SupportedLanguages: [fi, en, sv, ru, et]    # et falls back to en in some templates  # ✓source
 
-Segments:
+# ── Revenue segmentation ─────────────────────────────────────────────────────
+Segments:                              # ✓source
   transient:
     - TRANSIENT_RETAIL_DIRECT
     - TRANSIENT_3RD_PARTY_GROSS
@@ -98,18 +159,41 @@ Segments:
   other: [CONTRACT_LONG_STAY, COMPLIMENTARY_HOUSE_USE, OTHER]
   groups: [TRANSIENT, GROUP, CONTRACT, OTHER]
 
-VoucherCategory: [CAMPAIGN, COMPENSATE, COOPERATION, CORPORATE, EARLY_BOOKERS, EXTENDED_STAY, GROUP, PERSONNEL, PROMOTION, TEST, OTHER]
-VoucherTypes: [discount, monetary]     # discount=percent with total uses; monetary=fixed amount
-EarlyBookerCodes: [ENNAKKO7, ENNAKKO14, ENNAKKO30]
+# ── Vouchers ─────────────────────────────────────────────────────────────────
+VoucherCategory: [CAMPAIGN, COMPENSATE, COOPERATION, CORPORATE, EARLY_BOOKERS, EXTENDED_STAY, GROUP, PERSONNEL, PROMOTION, TEST, OTHER]  # ✓source
+VoucherTypes: [discount, monetary]     # discount=percent with total uses; monetary=fixed amount  # ✓source
+EarlyBookerCodes: [ENNAKKO7, ENNAKKO14, ENNAKKO30]  # ✓source
 
-AllotmentType:
+AllotmentType:                         # ✓source
   SOFT: Can be overbooked
   HARD: Strict limit, rooms released by workflow when expired
 
-IncidentType: [REQUIRES_EXTRA_CLEANING, TV_BROKEN, FUNITURE_BROKEN, LEAK_IN_BATHROOM, SOMETHING_ELSE_IS_WRONG, REPORT_LOST_AND_FOUND_ITEMS]
+IncidentType: [REQUIRES_EXTRA_CLEANING, TV_BROKEN, FUNITURE_BROKEN, LEAK_IN_BATHROOM, SOMETHING_ELSE_IS_WRONG, REPORT_LOST_AND_FOUND_ITEMS]  # ✓source
 
-AppType: [NELSON_WEB, MOBILE_APP, SERVICE_APP]
-AppConfigDataType: [STRING, INT, STRING_LIST]
+AppType: [NELSON_WEB, MOBILE_APP, SERVICE_APP]               # ✓source
+AppConfigDataType: [STRING, INT, STRING_LIST]                # ✓source
 
-EmailTypes_common: [UPSELL_LCO, UPSELL_SECIF, CONFIRMATION, WELCOME, THANKYOU, REMINDER, CANCELATION, GUEST_INVITATION, GUEST_UNINVITE, UPSELLING, HOTEL_NAME_CHANGE, WELCOME_GROUP_BOOKING, REMINDER_GROUP_BOOKING, MFA_CODE, OTHER]
+EmailTypes_common: [UPSELL_LCO, UPSELL_SECIF, CONFIRMATION, WELCOME, THANKYOU, REMINDER, CANCELATION, GUEST_INVITATION, GUEST_UNINVITE, UPSELLING, HOTEL_NAME_CHANGE, WELCOME_GROUP_BOOKING, REMINDER_GROUP_BOOKING, MFA_CODE, OTHER]  # ✓source
 # 80+ distinct types total — see docs/02-domain-model.md for full list if needed.
+
+# ── DB refresh command reference ─────────────────────────────────────────────
+how_to_refresh_from_db:
+  run_script: node scripts/db-dump.js > /tmp/db-dump.json   # dev box, observer tunnel must be open
+  distinct_queries:
+    ReservationState: |
+      SELECT DISTINCT state FROM nelson.reservation WHERE state IS NOT NULL ORDER BY state;
+    BookingChannel: |
+      SELECT DISTINCT booking_channel FROM nelson.reservation
+       WHERE booking_channel IS NOT NULL ORDER BY booking_channel;
+    ChangeType: |
+      SELECT DISTINCT change_type FROM nelson.reservation
+       WHERE change_type IS NOT NULL ORDER BY change_type;
+    ProductType: |
+      SELECT DISTINCT type FROM nelson.product ORDER BY type;
+  pg_enums: |
+    SELECT t.typname AS name, array_agg(e.enumlabel ORDER BY e.enumsortorder) AS labels
+      FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+     WHERE n.nspname = 'nelson'
+     GROUP BY t.typname;
+  never_run_on_these: [nelson.reservation, nelson.line_item, nelson.audit_log, nelson.audit_log_event]

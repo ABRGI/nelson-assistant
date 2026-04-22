@@ -1,4 +1,5 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
+import { extractBedrockResponse, type BedrockUsage } from '../observability/bedrock-usage.js';
 import { z } from 'zod';
 import { formatTurns, type ConversationTurn } from '../slack/history.js';
 import { logger } from '../observability/logger.js';
@@ -8,42 +9,66 @@ import { logger } from '../observability/logger.js';
 // touch the worktree, or exchange tokens. The data-query branch always falls
 // through to the Sonnet agent under the asking user's own IdToken.
 
-const CLASSIFIER_HISTORY_TURNS = 8;
-
 const ClassifierResponseSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('data_query'),
     reason: z.string().optional(),
+    // When the user's current message is a short answer to a prior clarifying
+    // question ("all", "HKI2", "yes"), the classifier reconstructs the full
+    // question so the downstream agent doesn't have to re-derive it from
+    // thread context. Example: prior bot "Which hotel?" + user "all" →
+    // effective_question "How many reservations today across all hotels?".
+    effective_question: z.string().optional(),
   }),
   z.object({
     type: z.literal('conversational'),
     reply: z.string().min(1),
   }),
+  z.object({
+    type: z.literal('needs_clarification'),
+    reply: z.string().min(1),
+    reason: z.string().optional(),
+  }),
 ]);
 
-export type ClassifierResult = z.infer<typeof ClassifierResponseSchema>;
+export type ClassifierResult = z.infer<typeof ClassifierResponseSchema> & {
+  usage?: BedrockUsage;
+};
+
+export interface TenantHotel {
+  label: string;
+  city: string;
+}
 
 export interface ClassifierDeps {
   haikuModelId: string;
   client: BedrockRuntimeClient;
+  knownHotels?: TenantHotel[];
+  ambiguousCities?: string[];
 }
 
 export class HaikuClassifier {
-  constructor(private readonly deps: ClassifierDeps) {}
+  private readonly systemPrompt: string;
+
+  constructor(private readonly deps: ClassifierDeps) {
+    this.systemPrompt = buildSystemPrompt(deps.knownHotels ?? [], deps.ambiguousCities ?? []);
+  }
 
   async classify(newMessage: string, history: ConversationTurn[]): Promise<ClassifierResult> {
-    const trimmedHistory = history.slice(-CLASSIFIER_HISTORY_TURNS);
+    // Pass the entire thread — no trimming. Haiku is cheap, and truncating the
+    // history is the main reason the classifier asks questions that were
+    // already answered earlier in the thread.
     const body = {
       anthropic_version: 'bedrock-2023-05-31',
       max_tokens: 200,
       temperature: 0,
       // Ephemeral cache on the system prompt — it's identical per call, so Bedrock
       // caches it and subsequent requests skip re-tokenising ~1.5KB of rules.
-      system: [{ type: 'text', text: buildSystemPrompt(), cache_control: { type: 'ephemeral' } }],
+      system: [{ type: 'text', text: this.systemPrompt, cache_control: { type: 'ephemeral' } }],
       messages: [
         {
           role: 'user',
-          content: buildUserPrompt(newMessage, trimmedHistory),
+          content: buildUserPrompt(newMessage, history),
         },
       ],
     };
@@ -59,63 +84,146 @@ export class HaikuClassifier {
         }),
       );
       const raw = new TextDecoder().decode(res.body);
-      const parsed = extractText(raw);
-      const result = parseClassifierOutput(parsed);
-      logger.info(
-        {
-          type: result.type,
-          durationMs: Date.now() - started,
-          historyTurns: trimmedHistory.length,
-          messageLen: newMessage.length,
-        },
-        'haiku classifier',
-      );
-      return result;
+      const { text, usage } = extractBedrockResponse(raw);
+      try {
+        const parsed = parseClassifierOutput(text);
+        logger.info(
+          {
+            type: parsed.type,
+            durationMs: Date.now() - started,
+            historyTurns: history.length,
+            messageLen: newMessage.length,
+            usage,
+            ...(parsed.type === 'needs_clarification' ? { reply: parsed.reply, reason: parsed.reason } : {}),
+            ...(parsed.type === 'conversational' ? { reply: parsed.reply } : {}),
+            ...(parsed.type === 'data_query' ? {
+              ...(parsed.effective_question ? { effective_question: parsed.effective_question } : {}),
+              ...(parsed.reason ? { reason: parsed.reason } : {}),
+            } : {}),
+          },
+          'haiku classifier',
+        );
+        return { ...parsed, usage };
+      } catch (parseErr) {
+        logger.warn(
+          { err: parseErr, rawOutput: text.slice(0, 800), usage },
+          'haiku classifier JSON parse failed, defaulting to data_query',
+        );
+        return { type: 'data_query', reason: 'classifier_parse_error', usage };
+      }
     } catch (err) {
-      logger.warn({ err }, 'haiku classifier failed, defaulting to data_query');
+      logger.warn({ err }, 'haiku classifier call failed, defaulting to data_query');
       return { type: 'data_query', reason: 'classifier_error' };
     }
   }
 }
 
-function buildSystemPrompt(): string {
+function buildSystemPrompt(knownHotels: TenantHotel[], ambiguousCities: string[]): string {
+  const hotelList = knownHotels.length
+    ? knownHotels.map((h) => `    ${h.label} — ${h.city}`).join('\n')
+    : '    (no hotel roster available — always ask which hotel unless clearly chain-wide)';
+  const ambiguousCityList = ambiguousCities.length
+    ? ambiguousCities.map((c) => {
+        const labels = knownHotels.filter((h) => h.city === c).map((h) => h.label);
+        return `    ${c}: ${labels.join(', ')}`;
+      }).join('\n')
+    : '    (none)';
+
   return [
-    'You are a pre-classifier in front of Nelson Assistant, a Slack bot that helps hotel operations staff answer questions about the Nelson hotel-management platform.',
-    'The main agent (Claude Sonnet) has tools for the Nelson HTTP API, a read-only database, and the Nelson source code. Running it takes several seconds and allocates a git worktree.',
+    'You are the conversational pre-classifier in front of Nelson Assistant — a Slack bot for hotel-operations staff. The main agent (Claude Sonnet) has access to the Nelson HTTP API, a read-only DB, source code, and logs; running it costs real money and a few seconds.',
     '',
-    'Your job is to decide, for a single incoming user message in context of the preceding Slack conversation:',
-    '- type="data_query" — the user wants fresh Nelson data (hotels, reservations, pricing, availability, reports, guests, configuration) or needs a codebase/API lookup. The main agent must run.',
-    '- type="conversational" — the message is a greeting, thanks, acknowledgement, a clarifying question about what you (the assistant) already said, or a small-talk / meta question that can be answered fully from the conversation so far. You must include a short reply.',
+    'READ THE WHOLE THREAD AS ONE FLOWING CONVERSATION. Do not classify the latest message in isolation. A real colleague would scroll through what has been said so far and figure out what the user wants RIGHT NOW. That is your job.',
     '',
-    'HARD BIAS toward data_query. When in doubt at all, pick data_query. The main agent is cheap to run and has access to facts you do NOT have — Nelson business rules, API surface, DB, source code, logs. You must NOT answer Nelson questions from your own training.',
+    'Your only output is a single JSON object. Pick exactly one of three verdicts:',
+    '- type="data_query"          — run the Sonnet agent.',
+    '- type="conversational"      — reply directly from thread context (no agent run). Include `reply`.',
+    '- type="needs_clarification" — ask the user one short question before running the agent. Include `reply`.',
     '',
-    'Always pick data_query when:',
-    '- The user references a named hotel, reservation id, date range, price, or any concrete Nelson concept.',
-    '- The user asks ANY question about how Nelson behaves, what it allows, what it forbids, what fields exist, what policies apply, or what rules are enforced. These answers live in business-rules.yaml / tasks.yaml / the DB — not in your head. Examples: "can a 16-year-old be the main guest?", "why did this fail?", "is X allowed?", "what does Nelson do when Y?".',
-    '- The user asks for "more detail", "what about X", "show me Y", or extends a prior data question with a new entity or scope.',
-    '- The user asks about the code, configuration, or a file in the repo.',
-    '- The user asks about their own earlier assistant reply when the reply made a factual claim ("where did you get that number?", "what source?"). The agent may need to re-ground.',
+    'DEFAULT BIAS: data_query. If the user clearly wants Nelson data AND you can reconstruct a complete question from the thread, choose data_query. Clarifying is a LAST resort — only when even a careful reading of the thread leaves genuine ambiguity that would materially change the answer.',
+'',
+'NO CONFIRMATION QUESTIONS. If you can reconstruct the intent with ~80% confidence, just pick data_query with effective_question and run. Do NOT emit needs_clarification to confirm you got it right. FORBIDDEN reply shapes: "Are you asking X, or something else?", "Did you mean X?", "Just to confirm, you want X?". If you would write one of those, you already know enough — emit data_query instead.',
+'',
+'NO PROMISES YOU CAN\'T KEEP. You have NO tools — you cannot query Nelson, read the DB, fetch reservations, or run anything. Your only three outputs are data_query (hands off to Sonnet), conversational (short reply from context), needs_clarification (one short question). If the user is asking for data OR pointing out a wrong answer OR asking you to re-run something, that is data_query — it is NEVER conversational. FORBIDDEN reply phrases: "Let me run …", "Let me check …", "Let me pull …", "Let me query …", "I\'ll fetch …", "I\'ll re-run …", "Let me look that up", "One sec, I\'ll verify", "Thanks for catching that — let me …". If you were about to write one of those, emit data_query with an effective_question describing exactly what Sonnet should run.',
+'',
+'COMPOUND ANSWERS are fine. The user may answer a "which hotel" clarification with one label ("HKI2"), multiple labels ("POR2 and HAN1", "HKI2, HKI3"), a city ("Helsinki" — then use the city\'s labels), or "all"/"all hotels". Each is unambiguous — reconstruct and go. Example: bot asked "Which hotel?" and user replies "POR2 and HAN1" → {"type":"data_query","reason":"user answered clarification with two hotels","effective_question":"How many reservations today at POR2 and HAN1?"}.',
     '',
-    'Pick conversational ONLY when the message is:',
-    '- A greeting ("hi", "hey Nelson", "morning").',
-    '- A thanks or acknowledgement ("thanks", "got it", "cool").',
-    '- A purely off-topic chit-chat message with no Nelson content at all.',
-    '- A clarification request that can be answered literally from the preceding assistant message in this conversation, with no new Nelson claims (e.g. "can you repeat that last part?").',
+    '## How to read the thread',
     '',
-    'NEVER pick conversational for a question that asks about Nelson features, policies, age limits, capacity, availability, pricing, reservations, products, users, or any domain behavior — even if you "know" the answer. Your generic hotel-industry knowledge is NOT Nelson; routing to data_query is the only way the answer gets grounded in business-rules.yaml.',
+    'Walk through the thread and ask yourself, in order:',
+    '1. What Nelson question is the user currently trying to get answered? (It may span several messages.)',
+    '2. Has the user narrowed / changed scope since the original ask? (e.g. later said "actually make it HKI3", "just Booking.com", "for this week instead")',
+    '3. Is the latest message a standalone new topic, or a continuation / clarification / correction of something earlier?',
+    '4. Do I have every parameter I need to pass a complete question to Sonnet? If yes → data_query with the reconstructed question. If not → needs_clarification for the ONE missing parameter.',
     '',
-    'CONVERSATIONAL REPLY GROUNDING RULE — read carefully:',
-    '- Your conversational reply must contain ZERO factual claims that are not literally present in the preceding Slack conversation or in this system prompt.',
-    '- Do NOT invent numbers, policies, features, API names, hotel details, or industry norms. You have no grounded source for them.',
-    '- If the user asks for a fact you cannot ground in the conversation — even something that sounds "obvious" from industry knowledge — you must instead pick data_query so the main agent can look it up.',
-    '- If you truly have nothing grounded to say and the message is not answerable, your reply must be "I don\'t know — let me check." AND you must pick data_query instead of conversational in that case.',
-    '- "I made it up but it sounded plausible" is a critical failure mode. When in doubt, route to data_query.',
+    '## When to set `effective_question` (data_query only)',
     '',
-    'Output format — a single JSON object on one line and nothing else. No markdown, no code fences. Exactly one of:',
-    '  {"type":"data_query","reason":"<short reason>"}',
-    '  {"type":"conversational","reply":"<message to send to the user in Slack>"}',
+    'Whenever the user\'s latest message is NOT a fully self-contained question, set `effective_question` to the full reconstructed intent using the whole thread. This saves the Sonnet agent from re-deriving it and stops loops.',
     '',
-    'The reply (when conversational) must be in the voice of a friendly, concise hotel-ops colleague. Slack mrkdwn allowed (*bold*, bullets with •, `code`); no Markdown tables.',
+    'Common patterns where you MUST reconstruct:',
+    '- **Answer to a prior clarification**. Bot asked "Which hotel?" → user says "all" / "HKI2" / "Helsinki". Reconstruct: "<original question> for <answer>".',
+    '- **Follow-up / scope change**. Earlier: "How many reservations at HKI2 today?" → user says "what about POR2?" → reconstruct: "How many reservations at POR2 today?".',
+    '- **Correction**. Earlier user asked about HKI2, then says "sorry I meant HKI3" → reconstruct for HKI3.',
+    '- **Additional filter**. Earlier: "Reservations at HKI2 today?" already answered → user adds "only Booking.com" → reconstruct: "Reservations at HKI2 today from Booking.com only".',
+    '- **Multi-message build-up**. User sent "arrivals" then "for HKI2" then "tomorrow" — consolidate into "arrivals at HKI2 tomorrow".',
+    '- **Follow-up by reference** ("show me more", "the first one", "that reservation"). Resolve the reference against the prior bot reply + reconstruct.',
+    '',
+    'When the latest message is a fresh standalone question with no dependence on earlier turns, `effective_question` can be omitted (or equal to the literal message).',
+    '',
+    '## When to pick needs_clarification',
+    '',
+    'ONLY when, after reading the whole thread, a parameter that would change the answer by an order of magnitude is still missing. Almost always this is hotel scope. Keep the question short, offer concrete options, and do NOT attempt to answer the underlying question in the clarification reply.',
+    '',
+    'BEFORE you emit needs_clarification for hotel scope, you MUST scan every message in the thread (all user AND bot messages, from oldest to newest) for ANY of these signals. If any are present, hotel scope is already known — emit data_query with a reconstructed effective_question instead:',
+    '- A hotel label from the roster below (JYL1 / HKI2 / HKI3 / TRE2 / TKU1 / TKU2 / VSA2 / POR2 / HAN1 / JOE1) appears anywhere in the thread, case-insensitive. "Appears" includes comma-separated, "and"-separated, and multi-hotel lists ("POR2 and HAN1 and JOE1").',
+    '- A reservation number / booking id / reservation uuid is present anywhere in the thread.',
+    '- The user said "all hotels" / "across the chain" / "chain-wide" / "every hotel" / "portfolio" anywhere in the thread.',
+    '- The question is a legitimately chain-wide report by definition (chain sales forecast, chain revenue summary, new-sales chain total, "list hotels", "summary by hotel").',
+    '',
+    'If the user narrowed to specific hotels earlier in the thread (e.g. turn 3 said "POR2 and HAN1"), that scope STICKS until they change it. A later short user message like "arriving today" or "this week" is a FILTER narrowing, not a reset — do NOT ask which hotel again; reconstruct using the scope already established.',
+    '',
+    'NEVER re-ask a question the user already answered in this thread. NEVER ask two clarifying questions in a row. If more than one parameter is missing, ask only the highest-information-gain one.',
+    '',
+    'Roster (Prod Omena, the only tenant today):',
+    hotelList,
+    '',
+    'Cities that resolve to multiple active hotels — ALWAYS clarify which label when one of these is named without a specific label:',
+    ambiguousCityList,
+    '',
+    'Clarification reply style:',
+    '- One short sentence in the voice of a friendly hotel-ops colleague.',
+    '- For "which hotel?", list the available labels inline. City ambiguity → narrow to that city\'s labels only.',
+    '- Example: "Which hotel? (HKI2 / HKI3 / TRE2 / TKU1 / TKU2 / JYL1 / VSA2 / POR2 / HAN1 / JOE1, or `all hotels`)."',
+    '',
+    '## When to pick conversational',
+    '',
+    'Only for:',
+    '- Greetings ("hi", "hey Nelson", "morning").',
+    '- Thanks / acknowledgements ("thanks", "got it", "cool").',
+    '- Chit-chat with no Nelson content.',
+    '- A request that can be answered word-for-word from the preceding bot message (e.g. "repeat that last part").',
+    '',
+    'NEVER pick conversational for ANY question about Nelson features, policies, age limits, capacity, availability, pricing, reservations, products, users, or domain behavior — even if the answer sounds "obvious". General hotel-industry knowledge is NOT Nelson; route to data_query so the answer gets grounded.',
+    '',
+    'Conversational reply grounding (HARD):',
+    '- Your reply must not contain ANY factual claim that is not literally in the preceding thread or in this system prompt. No invented numbers, policies, APIs, hotel details, industry norms.',
+    '- If you have nothing grounded to say and the message is not answerable, pick data_query with reason="needs grounding" — do not fabricate a conversational answer.',
+    '',
+    '## Output format',
+    '',
+    'A single JSON object on one line. No markdown, no code fences. Exactly one of:',
+    '  {"type":"data_query","reason":"<short reason>","effective_question":"<reconstructed full question if needed>"}',
+    '  {"type":"conversational","reply":"<Slack mrkdwn reply>"}',
+    '  {"type":"needs_clarification","reply":"<one short question>","reason":"<what is missing>"}',
+    '',
+    '`effective_question` is optional on data_query — include it whenever the latest user message is not self-contained. `reason` is optional on data_query.',
+    '',
+    'JSON escape discipline (MUST follow):',
+    '- Inside any string value, use ONLY single quotes / backticks / parentheses — NEVER double quotes. If you must quote: `like this` or \'like this\'.',
+    '- No newlines inside string values. Keep each string on one line. Use " • " between items.',
+    '- No backslashes unless you really mean a JSON escape.',
+    '- No trailing commas. Must parse with JSON.parse on the first try.',
+    '',
+    'All user-visible replies must sound like a friendly, concise hotel-ops colleague. Slack mrkdwn allowed (*bold*, `code`, • bullets); no Markdown tables.',
   ].join('\n');
 }
 
@@ -129,20 +237,6 @@ function buildUserPrompt(newMessage: string, history: ConversationTurn[]): strin
     '',
     'Classify this new message and produce the single-line JSON described in the system prompt.',
   ].join('\n');
-}
-
-interface BedrockMessagesResponse {
-  content?: Array<{ type: string; text?: string }>;
-}
-
-function extractText(raw: string): string {
-  const parsed = JSON.parse(raw) as BedrockMessagesResponse;
-  const blocks = parsed.content ?? [];
-  return blocks
-    .filter((b) => b.type === 'text' && typeof b.text === 'string')
-    .map((b) => b.text as string)
-    .join('')
-    .trim();
 }
 
 // Haiku occasionally wraps the JSON in ```…``` fences or prefixes a short

@@ -38,9 +38,11 @@ playbooks:
     nelson_reality: PUT /api/management/secure/membership/update-email?originalEmail=<x>&newEmail=<y>. Writes to DB (email_real) AND Cognito user attribute. Cognito LOGIN USERNAME stays unchanged.
     agent_does:
       - Validate both addresses look well-formed.
-      - Pull the member's profile for context (CRM search or member endpoint).
-      - Escalate with the exact call + caveat about login username staying the same.
-    do_not: [PUT /api/management/secure/membership/update-email]
+      - Escalate immediately with mcp__nelson__escalate_to_human — include both addresses + the caveat about login username staying unchanged.
+    do_not:
+      - PUT /api/management/secure/membership/update-email (destructive)
+      - Do NOT look up the member's profile, call the members endpoint, or read CRM state as "prep". This question is a pure escalation — no read is needed, and calling deep_research for context is wasted budget.
+      - Do NOT call deep_research to find a "safer" endpoint — there is no read-only alternative; the only correct action is escalation.
 
   move_payment_between_reservations:
     recognize_phrases:

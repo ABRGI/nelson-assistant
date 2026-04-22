@@ -1,6 +1,7 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { z } from 'zod';
 import { logger } from '../observability/logger.js';
+import { extractBedrockResponse, type BedrockUsage } from '../observability/bedrock-usage.js';
 
 // Post-answer grounding score. Haiku reviews the user's question, the assistant's
 // reply, and the list of tools the agent used, and estimates how well-grounded
@@ -12,7 +13,9 @@ const ConfidenceSchema = z.object({
   hedges: z.array(z.string()).max(6).default([]),
 });
 
-export type ConfidenceResult = z.infer<typeof ConfidenceSchema>;
+export type ConfidenceResult = z.infer<typeof ConfidenceSchema> & {
+  usage?: BedrockUsage;
+};
 
 export interface ConfidenceInput {
   question: string;
@@ -47,13 +50,13 @@ export class ConfidenceScorer {
         }),
       );
       const raw = new TextDecoder().decode(res.body);
-      const text = extractText(raw);
+      const { text, usage } = extractBedrockResponse(raw);
       const result = parseScore(text);
       logger.info(
-        { score: result.score, hedgeCount: result.hedges.length, durationMs: Date.now() - started },
+        { score: result.score, hedgeCount: result.hedges.length, durationMs: Date.now() - started, usage },
         'confidence scored',
       );
-      return result;
+      return { ...result, usage };
     } catch (err) {
       logger.warn({ err }, 'confidence scoring failed — defaulting to neutral 5/10');
       return { score: 5, hedges: ['confidence-scorer-failed'] };
@@ -93,19 +96,6 @@ function renderUser(input: ConfidenceInput): string {
     '',
     'Produce the JSON score now.',
   ].join('\n');
-}
-
-interface BedrockMessagesResponse {
-  content?: Array<{ type: string; text?: string }>;
-}
-
-function extractText(raw: string): string {
-  const parsed = JSON.parse(raw) as BedrockMessagesResponse;
-  return (parsed.content ?? [])
-    .filter((b) => b.type === 'text' && typeof b.text === 'string')
-    .map((b) => b.text as string)
-    .join('')
-    .trim();
 }
 
 export function parseScore(text: string): ConfidenceResult {

@@ -41,3 +41,24 @@ rule_for_agent: >-
   If the question matches a topic above, read that single doc — not the whole
   tree. Do NOT combine with docs from nelson/docs/ unless the question spans
   both the booking UI and the backend.
+
+component_location_hints:
+  # Saves a deep_research call when the user asks "where does X live in BUI?".
+  # Answer from this map first; only fall back to deep_research if the target
+  # isn't here AND the docs above don't cover it. ONE deep_research call max.
+  booking_flow_pages:        src/pages/booking/**
+  manage_booking_pages:      src/pages/my-booking/**
+  shared_ui_components:      src/components/**
+  forms_and_validation:      src/components/forms/** (+ docs/12-validation.md)
+  api_wrappers:              src/services/api/*.ts (authApi.ts for admin-gated)
+  localisation_strings:      src/services/localization/*.ts + src/locales/**
+  zustand_stores:            src/stores/*.ts (see docs/02-state-management.md)
+  feature_flags_usage:       search for GlobalHotelConfig.feature. (see docs/06-feature-flags.md)
+  payments_integration:      src/pages/booking/payment/** + docs/05-payments.md
+  breakfast_and_extras_upsell: src/pages/booking/extras/** — content text is NOT here, it comes from nelson-client-configuration (see cross-repo/content-map.yaml). To change the displayed times/prices, update the content repo, not the BUI.
+  hotel_selector_and_search: src/pages/booking/search/**
+  auth_and_sign_in:          src/pages/auth/** + docs/08-security.md
+
+how_to_answer_where_is_X_questions:
+  rule: Check component_location_hints first. If a match is found, cite the directory + the relevant doc from docs-map as the Source. Only call deep_research when the map above doesn't name the area.
+  remember: The user rarely needs the exact file:line — the directory + relevant doc is usually enough. If they ask for the line, THEN call deep_research (once) with a targeted grep.

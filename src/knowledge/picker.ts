@@ -1,6 +1,7 @@
 import { BedrockRuntimeClient, InvokeModelCommand } from '@aws-sdk/client-bedrock-runtime';
 import { z } from 'zod';
 import { logger } from '../observability/logger.js';
+import { extractBedrockResponse, type BedrockUsage } from '../observability/bedrock-usage.js';
 import type { KnowledgeBundle } from './loader.js';
 import { renderLeafCatalogue } from './loader.js';
 
@@ -15,7 +16,9 @@ const PickerResponseSchema = z.object({
   reason: z.string().optional(),
 });
 
-export type PickerResult = z.infer<typeof PickerResponseSchema>;
+export type PickerResult = z.infer<typeof PickerResponseSchema> & {
+  usage?: BedrockUsage;
+};
 
 export interface LeafPickerDeps {
   modelId: string;
@@ -55,18 +58,18 @@ export class LeafPicker {
         }),
       );
       const raw = new TextDecoder().decode(res.body);
-      const text = extractText(raw);
+      const { text, usage } = extractBedrockResponse(raw);
       const parsed = parsePickerOutput(text);
       const validLeaves = parsed.leaves.filter((p) => this.deps.bundle.leaves.has(p));
       const dropped = parsed.leaves.filter((p) => !this.deps.bundle.leaves.has(p));
       if (dropped.length) logger.warn({ dropped }, 'leaf picker proposed unknown paths');
       logger.info(
-        { chose: validLeaves, dropped: dropped.length, durationMs: Date.now() - started },
+        { chose: validLeaves, dropped: dropped.length, durationMs: Date.now() - started, usage },
         'leaf picker',
       );
       return validLeaves.length > 0
-        ? { leaves: validLeaves, ...(parsed.reason ? { reason: parsed.reason } : {}) }
-        : { leaves: [], reason: 'picker_no_valid_leaves' };
+        ? { leaves: validLeaves, usage, ...(parsed.reason ? { reason: parsed.reason } : {}) }
+        : { leaves: [], usage, reason: 'picker_no_valid_leaves' };
     } catch (err) {
       logger.warn({ err }, 'leaf picker failed — falling through with no pre-injection');
       return { leaves: [], reason: 'picker_error' };
@@ -97,19 +100,6 @@ function buildSystemPrompt(catalogue: string): string {
     'Output format (single JSON object on one line, no markdown):',
     '  {"leaves": ["nelson/tasks.yaml", "nelson/hotel-identity.yaml"], "reason": "<one-phrase why>"}',
   ].join('\n');
-}
-
-interface BedrockMessagesResponse {
-  content?: Array<{ type: string; text?: string }>;
-}
-
-function extractText(raw: string): string {
-  const parsed = JSON.parse(raw) as BedrockMessagesResponse;
-  return (parsed.content ?? [])
-    .filter((b) => b.type === 'text' && typeof b.text === 'string')
-    .map((b) => b.text as string)
-    .join('')
-    .trim();
 }
 
 export function parsePickerOutput(text: string): PickerResult {

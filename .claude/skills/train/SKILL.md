@@ -28,8 +28,21 @@ Awareness-only (documented in `knowledge/cross-repo/ecosystem.yaml` but NOT deep
 
 Ask (sensible defaults):
 
-1. **Target**: `all` | `<repo-name>` | comma-separated list. Default: prompt for a specific repo if Sandeep says "refresh nelson" etc., else default `all`.
+1. **Target**: `all` | `<repo-name>` | `db` | comma-separated list. `db` refreshes DB-sourced leaves only (enums, tenant-hotels). Default: prompt for a specific repo if Sandeep says "refresh nelson" etc., else default `all`.
 2. **Mode**: `diff-only` (preview + approval per leaf) vs `auto-update-safe-leaves` (auto-apply when the diff is additive-only; prompt for destructive). Default `diff-only`.
+
+## 0.5 · Check the observer DB connection
+
+For any run that refreshes DB-backed leaves (enums, tenant-hotels, any leaf with `last_db_refresh:` in its frontmatter), first verify the observer tunnel is open:
+
+```bash
+node -e "require('dotenv').config(); const { Client } = require('pg');
+  const c = new Client({ connectionString: process.env.PSQL_READ_ONLY_URL, ssl: { rejectUnauthorized: false } });
+  c.connect().then(() => c.query('SELECT 1')).then(() => { console.log('OK'); return c.end(); })
+   .catch(e => { console.error('DB_ERR:', e.message); process.exit(2); });"
+```
+
+If this fails with `ECONNREFUSED` or a no-tunnel error, **ask Sandeep to open the observer tunnel** (the SSM port-forward that exposes the RDS on `localhost:<port>` — typically `localhost:7435`) before continuing. Do not guess at the list; DB-truth is the authority here.
 
 ## 1 · Release-branch discipline (HARD RULE)
 
@@ -39,6 +52,35 @@ Read ONLY from `origin/<release-branch>`:
 - everything else → `master`
 
 Use `git fetch origin <branch> --quiet`, then `git show origin/<branch>:<path>` and `git ls-tree origin/<branch>`. **Never** `git checkout`. Develop / feature branches are off-limits — unstable changes on develop must not poison the knowledge.
+
+## 1.5 · DB refresh — authoritative enums + tenant hotel roster
+
+Enums and tenant data live in the DB, not in source. Refresh them from the observer connection before scanning source repos — source has drift (hallucinated enum values, stale hotel labels) that only the DB can correct.
+
+**Script**: `scripts/db-dump.js` (checked in; extend it as needs grow).
+
+Run:
+```bash
+node scripts/db-dump.js > /tmp/db-dump.json
+```
+
+What it pulls (all read-only, all bounded — no SELECT * on `reservation` / `line_item` / `audit_log` / any hot tables):
+
+1. `pg_enum` labels per schema (workflow_status, action_type, room_clean_status_event_*, member_deletion_status).
+2. `DISTINCT` value lists from the varchar domain enums: `reservation.state`, `reservation.booking_channel`, `reservation.change_type`, `product.type`, `reservation.type` (integer).
+3. `hotel` table — full roster (id, label, name, city, currency, country, time_zone, available) for the `nelson` schema. Split into active (available=true) and sunset (available=false).
+4. `information_schema.columns` for `room` and `product` — confirms the room-type-via-product.product_id relationship.
+
+Apply the output:
+- `knowledge/nelson/enums.yaml` — mark each enum `✓DB` or `✓source`; set `last_db_refresh: <YYYY-MM-DD>`. Remove any enum value that disappeared from the DB (these are common source-code hallucinations — e.g. `CHECK_IN_INCOMPLETE`, `NO_CHANGE`, `EXTRA`).
+- `knowledge/nelson/tenant-hotels.yaml` — rewrite the `hotels:` (available=true) and `sunset_or_inactive:` lists. Update `city_to_labels` and `ambiguous_cities` accordingly.
+
+**HARD RULES for DB reads in /train (and for the bot at runtime)**:
+- NEVER run `SELECT *` on `nelson.reservation`, `nelson.line_item`, `nelson.audit_log`, `nelson.audit_log_event`, or any table inserted into on reservation creation. These are 200k+ rows and a full scan will load the DB. Use `DISTINCT <column>`, `LIMIT`, or `WHERE invoice_date >= <recent>` filters.
+- Read-only observer role. SELECT only. No DDL, no INSERT/UPDATE/DELETE.
+- Use `?sslmode=require` or the equivalent `ssl: { rejectUnauthorized: false }` in the pg client — the RDS requires TLS.
+
+Once enums.yaml + tenant-hotels.yaml are in sync with DB, hot-reload the dev bot and verify `tenant hotel roster loaded count=<N>` in the log.
 
 ## 2 · Per-repo scan — what to read
 

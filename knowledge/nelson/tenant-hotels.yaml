@@ -1,0 +1,111 @@
+schema: 1
+node: tenant-hotels
+purpose: Roster of Prod Omena hotels (label + city + numeric id + name) so the bot can short-circuit "which hotel?" without hitting the API. Tenant-scoped — refresh via `/train` whenever hotels are added, opened or sunset.
+when_to_load: When a question references a hotel, a city that maps to multiple hotels, or the classifier needs to list available hotels in a clarifying reply.
+related: [.claude/knowledge/hotel-identity.yaml, .claude/knowledge/endpoints/hotels.yaml]
+
+authority_and_freshness:
+  # DB-sourced. Refreshed via /train on 2026-04-22.
+  last_db_refresh: 2026-04-22
+  connection: observer_user via PSQL_READ_ONLY_URL (nelson schema)
+  refresh_source: SELECT id, label, name, city, currency, country, time_zone, available FROM nelson.hotel ORDER BY id;
+  tenant: Prod Omena (DEFAULT_TENANT_ID 9b0703a5-48ae-46ef-9bf4-790c521e0586)
+  note: For any other tenant (Exhibition, Salo, etc.) this leaf must be re-derived against that tenant's schema.
+
+# Available = true (currently operating). 10 hotels.
+hotels:
+  - label: JYL1
+    id: 2
+    name: Omena-hotelli Jyväskylä
+    city: Jyväskylä
+  - label: HKI2
+    id: 3
+    name: Omena-hotelli Helsinki, Lönnrotinkatu
+    city: Helsinki
+  - label: TRE2
+    id: 6
+    name: Omena-hotelli Tampere
+    city: Tampere
+  - label: TKU1
+    id: 7
+    name: Omena-hotelli Turku, Humalistonkatu
+    city: Turku
+  - label: HKI3
+    id: 9
+    name: Omena-hotelli Helsinki, Yrjönkatu
+    city: Helsinki
+  - label: VSA2
+    id: 18
+    name: Omena-hotelli Vaasa
+    city: Vaasa
+  - label: POR2
+    id: 19
+    name: Omena-hotelli Pori
+    city: Pori
+  - label: TKU2
+    id: 20
+    name: Omena-hotelli Turku, Kauppiaskatu
+    city: Turku
+  - label: HAN1
+    id: 21
+    name: Omena hotelli Hanko
+    city: Hanko
+  - label: JOE1
+    id: 54
+    name: Omena hotelli Joensuu
+    city: Joensuu
+
+# Sunset / not currently available (available=false). Kept here so the bot
+# can recognise historical labels in queries and say "closed" instead of
+# 404-ing silently. DO NOT add to the active roster in the classifier.
+sunset_or_inactive:
+  - { label: HKI1,  id: 1,  city: Helsinki,   name: "Omena Eerikinkatu 24" }
+  - { label: SJK1,  id: 4,  city: Seinäjoki,  name: "Omena Kalevankatu 2" }
+  - { label: TRE1,  id: 5,  city: Tampere,    name: "Omena Hämeenkatu 28" }
+  - { label: VSA1,  id: 8,  city: Vaasa,      name: "Omena-hotelli Vaasa, Postitalo" }
+  - { label: KAO1,  id: 10, city: Ruka,       name: "Omena (Ruka)" }
+  - { label: CPH1,  id: 11, city: Copenhagen, name: "Omena Colbjørnsensgade 5-11" }
+  - { label: LAH1,  id: 12, city: Lahti,      name: "Omena Rauhankatu 14" }
+  - { label: STO1,  id: 13, city: Stockholm,  name: "Omena Torsgatan 10" }
+  - { label: CPH1B, id: 14, city: Copenhagen, name: "Omena Colbjørnsensgade 5-11 (B)" }
+  - { label: POR1,  id: 15, city: Pori,       name: "Omena Itäpuisto 1" }
+  - { label: OUL1,  id: 16, city: Oulu,       name: "Omena Uusikatu 26" }
+  - { label: STO1B, id: 17, city: Stockholm,  name: "Omena Torsgatan 10 (B)" }
+
+city_to_labels:
+  # Available hotels by city. Cities mapping to >1 label are flagged in
+  # ambiguous_cities below — always clarify before proceeding.
+  Helsinki:   [HKI2, HKI3]
+  Jyväskylä:  [JYL1]
+  Tampere:    [TRE2]
+  Turku:      [TKU1, TKU2]
+  Vaasa:      [VSA2]
+  Pori:       [POR2]
+  Hanko:      [HAN1]
+  Joensuu:    [JOE1]
+
+ambiguous_cities:
+  # Always clarify which of these hotels before proceeding.
+  - Helsinki
+  - Turku
+
+usage_notes:
+  - Use `label` (string, e.g. HKI2) for path params on /api/prices/{label}, /api/doors/{label}, etc.
+  - Use `id` (numeric) for path params on /api/management/secure/hotels/{id}, ?hotelIds= query, etc. See hotel-identity.yaml for the full routing.
+  - When a user writes a label in any case (hki2, Hki2, HKI2) uppercase and look it up here before passing on.
+  - If a user names a sunset label (HKI1, SJK1, VSA1, TRE1, etc.), reply "that hotel is no longer operating under Omena — did you mean <nearby active label>?"
+
+never_ask_for_hotel_when:
+  # Classifier should skip the "which hotel?" prompt here.
+  - A reservation number is present in the message (hotel is derivable from the reservation record).
+  - The message literally says "all hotels", "across the chain", "chain-wide", "portfolio", "every hotel".
+  - The question is a chain-wide report by definition — see chain_wide_reports.
+  - A label from the active `hotels` list above appears in the message text (case-insensitive).
+  - A label appears in any earlier bot or user message in the current Slack thread.
+
+chain_wide_reports:
+  - Sales forecast (chain total)
+  - Revenue report (with optional hotelIds filter; default = all)
+  - New sales report
+  - Occupancy summary (all hotels, same calendar period)
+  - Any "list all hotels" or "summary by hotel" intent

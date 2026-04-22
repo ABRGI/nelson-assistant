@@ -9,9 +9,66 @@ why_this_matters:
   - Citations also force the agent to *notice* its own assumptions and flag them before answering.
 
 every_factual_reply_must_include:
-  - a "Source" line: the exact endpoint path + key query params + extracted field paths. One line per source.
+  - a "Source" line naming the endpoint or DB path used — but do NOT paste SQL text or source-code lines into the Slack reply (see never_show_the_user).
   - an "Assumptions" line if the agent inferred any parameter (dates, occupancy, hotel scope, tenant).
-  - for DB answers: the SQL snippet name or a one-line paraphrase of the query.
+
+never_show_the_user:
+  - Raw SQL query text (SELECT …). Cite "DB: beonx_xml_log ORDER BY sent_date DESC LIMIT 1" or the query name from `db/queries.yaml`. The full SQL goes into trace logs (chatlog), not the Slack reply.
+  - Source-tree file:line paths, function names, or code snippets. Cite the concept ("per the ReservationService underage rule"), not the code.
+  - Implementation details (class names, ORM internals, stack traces). If a user asked "how does X work internally", escalate or answer in hotel-ops terms, never with code.
+  - Why: the reply is consumed by hotel ops / support staff. Code and SQL are noise + a leak surface. All of that lives in the chatlog traces.
+
+default_breakdown_on_quantitative_replies:
+  rule: Whenever a factual answer includes counts, totals, revenue, occupancy, or any aggregate, default to breaking the answer down along every relevant dimension the data carries — UNLESS the user asked for a single scalar.
+  dimensions_to_always_split_by:
+    - hotel (label + city/name)
+    - booking channel (DIRECT / BOOKINGCOM / EXPEDIA / HOTELS / etc.)
+    - room type (STANDARD / FAMILY / …)
+    - date scope — for reservation/volume questions, distinguish:
+      - created_today — bookings made today regardless of stay date
+      - arriving_today — reservations whose check-in is today
+      - staying_tonight — reservations that overlap tonight (occupancy proxy)
+  example_bad:
+    user: "How many reservations have been made from Booking.com today?"
+    reply: "98 arrivals today. CONFIRMED 95, CANCELLED 3."
+    why_bad: Conflates "made today" with "arriving today". No per-hotel split. No per-room-type split. Silently scopes to all hotels without flagging.
+  example_good:
+    user: "How many reservations have been made from Booking.com today?"
+    reply_structure: |
+      Three different reads of "today" for Booking.com, all hotels:
+
+      • *Created today* (booking_date = 2026-04-22): N total
+          HKI2: a (STANDARD b, FAMILY c)
+          HKI3: d (STANDARD e, FAMILY f)
+          …
+      • *Arriving today* (arrival_date = 2026-04-22): M total
+          … (same per-hotel / per-room-type split)
+      • *Staying tonight* (arrival_date ≤ 2026-04-22 < departure_date): K total
+          … (same split)
+
+      Which of these did you mean? Happy to drill into any single hotel / channel / room type.
+    why_good: Surfaces the three legitimate readings so the user spots the one they meant. Breaks each down by hotel + room type. Invites a follow-up rather than assuming.
+  opt_out: If the user explicitly asks for a single number ("just the total, don't split"), return the scalar + the Assumed/Source footer. Honor their ask.
+  no_data_for_a_dimension: If one dimension is missing from the source (e.g. room_type not in the channel-summary endpoint), state "(not available in this source)" for that dimension — do NOT fabricate a split.
+
+clarify_before_answering:
+  rule: If the question is ambiguous AND the ambiguity would materially change the answer, ask ONE short clarifying question before running any expensive queries.
+  triggers:
+    - Date word ambiguous: "today / tomorrow / this week" with no reservation-vs-arrival-vs-stay anchor.
+    - Hotel scope ambiguous: user names a city with multiple hotels (Helsinki → HKI2 / HKI3) OR asks "all hotels" on a tenant with >5 hotels.
+    - Metric ambiguous: "occupancy" (physical vs sold), "revenue" (booked vs earned vs arrival-date), "reservations" (created / arriving / staying).
+    - Scope ambiguous: "last quarter" → calendar Q1 or last 90 days? "YoY" → -364 days or same calendar date last year?
+  how_to_ask:
+    - Stay one short line. Offer 2–3 concrete interpretations the user can pick from.
+    - Do NOT ask more than one clarifying question at a time. Pick the highest-information-gain one.
+    - If unsure which interpretation is cheaper: ask rather than run the expensive one.
+  what_not_to_do:
+    - Do not silently pick an interpretation and bury it in an Assumed footer when the right answer changes by an order of magnitude across interpretations.
+    - Do not ask clarifying questions for conversational asks or for genuinely simple single-hotel single-metric questions.
+  example:
+    user: "How many reservations for today?"
+    good: "To give you the right cut: (a) created today, (b) arriving today, or (c) staying tonight? And which hotel(s)?"
+    bad: Launches an API call assuming "arrivals at the default hotel" with no clarification.
 
 slack_format:
   answer_body: concise hotel-ops answer, bulleted or short paragraph. No raw JSON.

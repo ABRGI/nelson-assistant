@@ -127,6 +127,36 @@ canonical_sql:
     description: Same shape as the Revenue XLSX report in the MUI. Per hotel + total row.
     sql_reference: nelson-web/src/main/java/nelson/report/ReportService.java REVENUE_REPORT (the ":nights" variable is end_date - start_date + 1).
 
+how_to_answer_a_kpi_question_end_to_end:
+  step_1_pick_source:
+    prefer_api_first:
+      - For ADR / RevPAR / Occupancy / Revenue / New Sales queries that span one hotel for one day or one date range, prefer
+        `GET /api/management/secure/sales-forecast-daily-data` (JSON) over the XLSX revenue report — it carries the same 6-metric groups (ADR, RevPAR, Occupancy, Revenue, Usages, Room Nights Available) and is parseable in Slack.
+      - Query params (verify shape per response-shapes.yaml): `hotelIds` (csv of numeric ids — map label→id via the hotels list), `startDate`, `endDate` in YYYY-MM-DD.
+      - YoY: call the endpoint twice with the -364d window (see yoy_convention above) and compare.
+    fall_back_to_sql_when:
+      - The user asks for a KPI variation not in the JSON feed (e.g. per-room-type ADR, per-channel ADR).
+      - API returns empty/500 twice in a row (per retry-policy.yaml).
+      - The user explicitly asks "from the DB".
+    sql_path: use `canonical_sql.revenue_and_adr_for_single_date` above — it already includes the -364 YoY join.
+  step_2_format_the_reply:
+    - Always show "this period" and "last period (−364d)" side by side when YoY is requested.
+    - Break down per hotel (the endpoint returns per-hotel rows); include a total row.
+    - Call out which YoY convention you used (−364d default vs calendar-year override).
+    - Follow output-format.yaml — never paste raw SQL into the reply.
+  worked_example:
+    user: "What was ADR last year vs this year for 11th April?"
+    good_reply_structure: |
+      ADR for *2026-04-11 (Saturday)* vs *2025-04-12 (Saturday, YoY −364d)*, across all available hotels:
+
+      • HKI2: €71.20 (this) vs €68.05 (last) — +4.6%
+      • HKI3: … (this) vs … (last) — …
+      • POR2: … (this) vs … (last) — …
+      (Total row, net / excl VAT)
+
+      _Assumed: Nelson's default YoY convention (−364 days, DoW-aligned). Say "calendar year" if you want 2025-04-11 instead._
+      _Source: GET /api/management/secure/sales-forecast-daily-data?startDate=2026-04-11&endDate=2026-04-11&hotelIds=... → per-hotel {adr, revenue, usages}_
+
 add_a_new_kpi:
   when: A KPI (e.g. ALOS — average length of stay) recurs in questions and the graph doesn't cover it.
   how: Add it here with formula + canonical SQL. If the KPI has a Nelson-specific nuance (like ADR's -364 YoY), document the convention explicitly.
