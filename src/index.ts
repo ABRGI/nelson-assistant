@@ -119,6 +119,8 @@ async function main(): Promise<void> {
     sonnetModelId: config.BEDROCK_SONNET_MODEL_ID,
     ...(config.runtime.psqlReadOnlyUrl ? { psqlReadOnlyUrl: config.runtime.psqlReadOnlyUrl } : {}),
     ...(psqlPool ? { psqlPool } : {}),
+    store,
+    knownHotelLabels: tenantHotels.hotels.map((h) => h.label),
     escalationSlackUserId: config.ESCALATION_SLACK_USER_ID,
     authCallbackBaseUrl: config.AUTH_CALLBACK_BASE_URL,
     resolveTenant,

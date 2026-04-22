@@ -8,6 +8,14 @@ import type { AskJob, JobHandler } from '../queue/inproc.js';
 import type { WorktreePool } from '../worktree/pool.js';
 import { logger } from '../observability/logger.js';
 import type { ChatLog } from '../observability/chatlog.js';
+import {
+  loadOrCreateThreadState,
+  saveThreadState,
+  renderThreadStateForPrompt,
+  extractSignalsFromText,
+  mergeSignalsIntoState,
+  recordTurnCompleted,
+} from '../state/thread-state.js';
 import { ThreadProgressMessage } from '../slack/renderer.js';
 import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
 import type { HaikuClassifier, ClassifierResult } from './classifier.js';
@@ -34,6 +42,8 @@ export interface PipelineDeps {
   sonnetModelId: string;
   psqlReadOnlyUrl?: string;
   psqlPool?: import('pg').Pool;
+  store: import('../state/types.js').JsonStore;
+  knownHotelLabels: string[];
   escalationSlackUserId: string;
   authCallbackBaseUrl: string;
   resolveTenant: () => ClientRecord;
@@ -90,6 +100,19 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       excludeTs: job.userMessageTs,
     });
 
+    // Load persisted thread state (survives bot restarts; rehydrates hotel
+    // scope, reservations, metric cuts, cost totals from earlier turns). Merge
+    // in the signals from this new message upfront so the classifier + picker
+    // see the up-to-date context.
+    const tenantEarly = deps.resolveTenant();
+    let threadState = await loadOrCreateThreadState(deps.store, {
+      threadTs,
+      channel: job.channel,
+      tenantId: tenantEarly.tenantId,
+    });
+    const inboundSignals = extractSignalsFromText(job.text, deps.knownHotelLabels);
+    threadState = mergeSignalsIntoState(threadState, inboundSignals);
+
     // Kick off the Cognito refresh alongside the classifier so the ~200-500ms
     // exchange overlaps with Haiku. We discard the result on the conversational
     // branch; refresh tokens are reusable so the "extra" call is harmless.
@@ -102,7 +125,8 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       (err: unknown) => ({ ok: false as const, err }),
     );
 
-    const rawVerdict = await deps.classifier.classify(job.text, history);
+    const renderedThreadContext = renderThreadStateForPrompt(threadState);
+    const rawVerdict = await deps.classifier.classify(job.text, history, renderedThreadContext);
     // Safety net: if the classifier emits a conversational reply that promises
     // to "run / check / pull / fetch / look up" data — it has no tools, so the
     // promise would be a dead end. Coerce to data_query so Sonnet actually
@@ -134,6 +158,10 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         { slackUserId: job.userId, reason: verdict.type },
         'job completed (no agent run)',
       );
+      threadState = recordTurnCompleted(threadState, {
+        botReplySnippet: verdict.reply,
+      });
+      await saveThreadState(deps.store, threadState);
       return;
     }
 
@@ -201,7 +229,13 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
     // worktree on demand inside the tool handler.
     progress.update(':books: Loading the right playbook…');
     const picked = await deps.leafPicker.pick(effectiveText);
-    const knowledgeInjection = renderInjection(deps.knowledge, picked.leaves);
+    const leafInjection = renderInjection(deps.knowledge, picked.leaves);
+    // Prepend the rendered thread state so Sonnet sees established hotel scope,
+    // reservation ids, metric cuts, and the prior-turn summary before the leaf
+    // content. Empty string when this is the first turn.
+    const knowledgeInjection = renderedThreadContext
+      ? `${renderedThreadContext}\n\n${leafInjection}`
+      : leafInjection;
     logEvent('tool_use', {
       name: 'leaf_picker',
       input: { question: effectiveText, ...(effectiveText !== job.text ? { originalUserText: job.text } : {}) },
@@ -289,6 +323,18 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         'job completed',
       );
       await deps.bindings.markUsed(job.userId).catch(() => undefined);
+      // Record what was established this turn so the next turn rehydrates it.
+      const replySignals = extractSignalsFromText(finalText, deps.knownHotelLabels);
+      threadState = mergeSignalsIntoState(threadState, replySignals);
+      threadState = recordTurnCompleted(threadState, {
+        toolName: lastToolName,
+        costUsd: result.cost?.totalCostUsd ?? 0,
+        numTurns: result.cost?.numTurns ?? 0,
+        deepResearchCalls: result.cost?.deepResearchCalls ?? 0,
+        ...(verdict.effective_question ? { effectiveQuestion: verdict.effective_question } : {}),
+        botReplySnippet: finalText,
+      });
+      await saveThreadState(deps.store, threadState);
     } catch (err) {
       logger.error({ err }, 'agent run failed');
       await swapReaction(slack, job, 'x');
@@ -296,6 +342,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
       await progress.finalize(
         `:x: Something went wrong and I couldn't complete your request.\n\`\`\`${(err as Error).message}\`\`\`\nPlease contact <@${deps.escalationSlackUserId}> for help.`,
       );
+      await saveThreadState(deps.store, recordTurnCompleted(threadState, {})).catch(() => undefined);
     }
   };
 }

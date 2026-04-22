@@ -54,7 +54,11 @@ export class HaikuClassifier {
     this.systemPrompt = buildSystemPrompt(deps.knownHotels ?? [], deps.ambiguousCities ?? []);
   }
 
-  async classify(newMessage: string, history: ConversationTurn[]): Promise<ClassifierResult> {
+  async classify(
+    newMessage: string,
+    history: ConversationTurn[],
+    threadContext?: string,
+  ): Promise<ClassifierResult> {
     // Pass the entire thread — no trimming. Haiku is cheap, and truncating the
     // history is the main reason the classifier asks questions that were
     // already answered earlier in the thread.
@@ -68,7 +72,7 @@ export class HaikuClassifier {
       messages: [
         {
           role: 'user',
-          content: buildUserPrompt(newMessage, history),
+          content: buildUserPrompt(newMessage, history, threadContext),
         },
       ],
     };
@@ -231,16 +235,26 @@ function buildSystemPrompt(knownHotels: TenantHotel[], ambiguousCities: string[]
   ].join('\n');
 }
 
-function buildUserPrompt(newMessage: string, history: ConversationTurn[]): string {
+function buildUserPrompt(
+  newMessage: string,
+  history: ConversationTurn[],
+  threadContext?: string,
+): string {
   const historyBlock = history.length ? formatTurns(history) : '(no prior messages in this conversation)';
-  return [
+  const parts: string[] = [];
+  if (threadContext) {
+    parts.push(threadContext);
+    parts.push('');
+  }
+  parts.push(
     'Conversation so far (chronological):',
     historyBlock,
     '',
     `New user message: ${newMessage}`,
     '',
     'Classify this new message and produce the single-line JSON described in the system prompt.',
-  ].join('\n');
+  );
+  return parts.join('\n');
 }
 
 // Haiku occasionally wraps the JSON in ```…``` fences or prefixes a short
