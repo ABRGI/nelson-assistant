@@ -15,7 +15,7 @@ require('dotenv').config();
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('url');
-const { execSync } = require('node:child_process');
+const { sighupDevServer } = require('./_sighup-dev-server.js');
 
 async function readInput() {
   const arg = process.argv[2];
@@ -25,28 +25,6 @@ async function readInput() {
     throw new Error('No decision JSON on stdin and no file path given. Pipe JSON or pass a file path.');
   }
   return JSON.parse(stdin);
-}
-
-function sighupDevServer() {
-  let pids = [];
-  try {
-    const out = execSync("pgrep -f 'tsx.*src/index'", { encoding: 'utf-8' }).trim();
-    pids = out.split(/\s+/).filter(Boolean);
-  } catch {
-    // pgrep exits non-zero when no matches — expected.
-  }
-  if (pids.length === 0) {
-    console.log('(no running tsx dev server — skipping reload)');
-    return;
-  }
-  for (const pid of pids) {
-    try {
-      process.kill(Number(pid), 'SIGHUP');
-      console.log(`→ SIGHUP sent to dev server pid=${pid}`);
-    } catch (err) {
-      console.log(`(failed to SIGHUP pid=${pid}: ${err.message})`);
-    }
-  }
 }
 
 async function main() {

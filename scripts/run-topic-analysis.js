@@ -85,6 +85,12 @@ async function main() {
   if (save) {
     const key = await saveTopicReport(store, report);
     console.error(`Report saved to ${key}`);
+    try {
+      const { sighupDevServer } = require('./_sighup-dev-server.js');
+      sighupDevServer();
+    } catch (e) {
+      console.error(`SIGHUP helper failed: ${e.message}`);
+    }
   }
 
   if (notify) {

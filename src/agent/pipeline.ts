@@ -17,6 +17,8 @@ import {
   recordTurnCompleted,
 } from '../state/thread-state.js';
 import { matchDecisions, renderDecisionsForPrompt, type Decision } from '../state/decisions.js';
+import { matchTopicHints, renderTopicHintsForPrompt } from '../state/topic-hints.js';
+import type { TopicReport } from '../analytics/topics.js';
 import { ThreadProgressMessage } from '../slack/renderer.js';
 import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
 import type { HaikuClassifier, ClassifierResult } from './classifier.js';
@@ -46,6 +48,8 @@ export interface PipelineDeps {
   store: import('../state/types.js').JsonStore;
   knownHotelLabels: string[];
   decisions: Decision[];
+  // Holder for the latest topic report. Index.ts mutates .current on SIGHUP.
+  topicReportRef: { current: TopicReport | null };
   escalationSlackUserId: string;
   authCallbackBaseUrl: string;
   resolveTenant: () => ClientRecord;
@@ -241,8 +245,16 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         output: { matched: matchedDecisions.map((d) => ({ slug: d.slug, version: d.version })) },
       }, tenant.tenantId);
     }
-    // Ordering: most-authoritative first (decisions > thread state > leaves).
-    const knowledgeInjection = [renderedDecisions, renderedThreadContext, leafInjection]
+    const matchedTopicHints = matchTopicHints(matchQuestion, deps.topicReportRef.current);
+    const renderedTopicHints = renderTopicHintsForPrompt(matchedTopicHints);
+    if (matchedTopicHints.length > 0) {
+      logEvent('tool_use', {
+        name: 'topic_hint_matcher',
+        output: { matched: matchedTopicHints.map((m) => ({ clusterId: m.cluster.id, frequency: m.cluster.frequency })) },
+      }, tenant.tenantId);
+    }
+    // Ordering: most-authoritative first (decisions > thread state > topic hints > leaves).
+    const knowledgeInjection = [renderedDecisions, renderedThreadContext, renderedTopicHints, leafInjection]
       .filter((part): part is string => typeof part === 'string' && part.length > 0)
       .join('\n\n');
     logEvent('tool_use', {

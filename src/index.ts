@@ -33,6 +33,8 @@ import { loadTenantHotelsFromBundle } from './knowledge/tenant-hotels.js';
 import { LeafPicker } from './knowledge/picker.js';
 import { buildPsqlPool } from './agent/tools/psql.js';
 import { loadAllDecisions } from './state/decisions.js';
+import { loadLatestTopicReport } from './state/topic-hints.js';
+import type { TopicReport } from './analytics/topics.js';
 
 const DEFAULT_PROJECT = 'nelson';
 // Knowledge graph lands on `develop` first; switch to 'master' once the team's
@@ -78,8 +80,15 @@ async function main(): Promise<void> {
   const decisions = await loadAllDecisions(store);
   logger.info({ count: decisions.length }, 'decision memory loaded');
 
-  // SIGHUP reloads decision memory in place. scripts/write-decision.js sends
-  // this after a /debug or /learning session writes a new decision file.
+  const topicReportRef: { current: TopicReport | null } = { current: await loadLatestTopicReport(store) };
+  logger.info(
+    { clusters: topicReportRef.current?.clusters.length ?? 0, generatedAt: topicReportRef.current?.generatedAt ?? null },
+    'topic report loaded',
+  );
+
+  // SIGHUP reloads both decision memory and the latest topic report in place.
+  // scripts/write-decision.js sends this after a /debug or /learning session;
+  // the topic-analysis cron can SIGHUP too so a new cluster file lands live.
   process.on('SIGHUP', () => {
     loadAllDecisions(store)
       .then((next) => {
@@ -88,6 +97,17 @@ async function main(): Promise<void> {
       })
       .catch((err) => {
         logger.warn({ err }, 'decision memory reload failed');
+      });
+    loadLatestTopicReport(store)
+      .then((report) => {
+        topicReportRef.current = report;
+        logger.info(
+          { clusters: report?.clusters.length ?? 0, generatedAt: report?.generatedAt ?? null },
+          'topic report reloaded (SIGHUP)',
+        );
+      })
+      .catch((err) => {
+        logger.warn({ err }, 'topic report reload failed');
       });
   });
 
@@ -139,6 +159,7 @@ async function main(): Promise<void> {
     store,
     knownHotelLabels: tenantHotels.hotels.map((h) => h.label),
     decisions,
+    topicReportRef,
     escalationSlackUserId: config.ESCALATION_SLACK_USER_ID,
     authCallbackBaseUrl: config.AUTH_CALLBACK_BASE_URL,
     resolveTenant,
