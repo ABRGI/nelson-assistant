@@ -17,7 +17,7 @@ Single source of truth for "what state is this project in, what's next, and what
 | Stage 2 — CDK stacks (vpc, hosted-zone, peering, service) | ✅ done (2026-04-21) | 4 stacks in `infra/lib/`, deployed to `459045743560` eu-central-1 |
 | Production deploy | ✅ done (2026-04-21) | ECS Fargate + ALB at `assistant.nelson.management`; currently scaled to 0 while iterating locally |
 | Haiku pre-classifier | ✅ done (2026-04-21) | data-query vs conversational; token-exchange runs in parallel; ephemeral prompt cache |
-| Thread state in S3 (`threads/<ts>.json`) | ⬜ todo | long threads lose context after bot restart |
+| Thread state in S3 (`threads/<ts>.json`) | ✅ done (2026-04-22) | `src/state/thread-state.ts` — scope/reservations/metric cuts/tools/cost persist per thread; loads at pipeline start, saves at end; 19 tests green |
 | Chat-log + confidence + feedback + learning-session loop | ⬇ see next section | replaces plain "audit log"; 6-phase plan (A-F) |
 | Per-session `deep_research` cap (max 1 call / sessionId) | ✅ done (2026-04-22) | closure counter in runner; second call returns a REJECTED text telling the model to answer from what it has or escalate |
 | Bedrock cost/token capture end-to-end (Sonnet + Haiku helper roles) | ✅ done (2026-04-22) | SDK `total_cost_usd`/`modelUsage`/`num_turns`/`duration_ms` captured in runner; helper-role usage via shared `bedrock-usage.ts` — all written to `agent_reply`/`classifier_verdict`/`tool_use` chatlog events |
@@ -29,9 +29,10 @@ Single source of truth for "what state is this project in, what's next, and what
 | Dev-time debug channel (`debug <...>` / `[debug]`) | ✅ done (2026-04-22) | bot short-circuits; Monitor picks up; `scripts/slack-{thread,post}.js` helpers; file_share filter fix |
 | Classifier full-thread context + promise coercion | ✅ done (2026-04-22) | no trim, `conversations.replies` scoped, past + future promise patterns rerouted to data_query |
 | Slack reply hardening (chunking + mrkdwn) | ✅ done (2026-04-22) | `splitForSlack` for >3800 chars; full mrkdwn cheatsheet in runner seed |
-| Analytics on chatlog (slow queries, deep_research triggers → leaf-gap list) | ⬇ Phase E (next) | now that chatlog events carry cost + deepResearchCalls + usage + effective_question, the scheduled pass can aggregate |
+| Analytics on chatlog (slow queries, deep_research triggers → leaf-gap list) | ✅ done (2026-04-23) | `src/analytics/bundle-gap.ts` — aggregates per-thread cost/tools/confidence/feedback, flags by threshold, persists to `analytics/bundle-gaps/<date>.json`. CLI at `scripts/run-bundle-gap-analysis.js`. 9 tests green. `/learning` skill updated to consume the pre-computed report. |
 | Question similarity + frequency clustering | ⬜ Phase F | after Phase E — embeds + cluster + elevate top-K to pre-injection |
-| Thread state persistence in S3 (`threads/<ts>.json`) | ⬜ todo | Phase E sibling — cache decisions/tools/reply summary per thread so long threads rehydrate after restart |
+| dateMode selection HARD rule (ARRIVAL vs EXACT vs STAY vs CREATED) | ✅ done (2026-04-22) | `endpoints/reservations.yaml#dateMode_semantics` + runner seed — DB-verified user-phrasing → mode map; query-param logging on `nelson_api` tool |
+| Decision memory (`decisions/<topic-slug>.json`) | ⬜ Phase E follow-on | distil fixes from `/debug` + `/learning` into indexed records the picker can consult before re-diagnosing |
 | File uploads from Slack (`file_share` subtype) | ⬜ todo | download via bot token, save to worktree, pass path in prompt |
 | Deferred agent tools (`psql`, `download_report`, `playwright`) | ⬜ todo | unit-testable, no Slack needed |
 | `@mentions` in channels | ⬜ untested | handler wired; bot needs to be invited to a channel to verify |
@@ -42,7 +43,7 @@ Single source of truth for "what state is this project in, what's next, and what
 Legend: ✅ done · ⏳ in progress · ⏸ blocked on external · ⬜ todo
 
 **Known API bugs (Nelson side, not this service)**:
-`/api/management/secure/reservations/arrivals` returns 500 (`hotel is null`); pagination on the main reservations search appears broken (agent told to use `totalCount` with `dateMode=EXACT`).
+`/api/management/secure/reservations/arrivals` returns 500 (`hotel is null`) — workaround is `/reservations?dateMode=ARRIVAL` (not EXACT; see `endpoints/reservations.yaml#dateMode_semantics`). Pagination cursor on the main reservations search is flaky — agent uses `totalCount=true` + narrow date windows.
 
 ---
 

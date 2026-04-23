@@ -19,7 +19,18 @@ Ask (use sensible defaults — don't over-prompt):
 
 ## 1 · Pull flagged events
 
-The chat log lives in the state bucket under `chatlog/<yyyy-mm-dd>/<thread_ts>/<eventTs>-<eventId>.json`.
+**Preferred path — read the pre-computed bundle-gap report.** `scripts/run-bundle-gap-analysis.js` already walks the chatlog, aggregates per-thread cost / deep_research / confidence / feedback, and writes `analytics/bundle-gaps/<yyyy-mm-dd>.json`. If that report exists for the window, pull it first — it carries `flaggedThreads[]` with `flagReasons` already computed.
+
+```bash
+# Dev (fs store)
+cat .local-state/state/analytics/bundle-gaps/$(date +%F).json | jq
+# Prod (S3 store)
+AWS_PROFILE=nelson aws s3 cp s3://nelsonassistant-nelson-assistant-state/analytics/bundle-gaps/$(date +%F).json - | jq
+# Regenerate for a custom window
+node scripts/run-bundle-gap-analysis.js --since=24h --save
+```
+
+**Fallback — walk the raw chatlog.** If no report exists or you want a custom window the report doesn't cover:
 
 ```bash
 AWS_PROFILE=nelson aws s3 ls s3://nelsonassistant-nelson-assistant-state/chatlog/<yyyy-mm-dd>/ --recursive --region eu-central-1
