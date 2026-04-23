@@ -78,6 +78,19 @@ async function main(): Promise<void> {
   const decisions = await loadAllDecisions(store);
   logger.info({ count: decisions.length }, 'decision memory loaded');
 
+  // SIGHUP reloads decision memory in place. scripts/write-decision.js sends
+  // this after a /debug or /learning session writes a new decision file.
+  process.on('SIGHUP', () => {
+    loadAllDecisions(store)
+      .then((next) => {
+        decisions.splice(0, decisions.length, ...next);
+        logger.info({ count: decisions.length }, 'decision memory reloaded (SIGHUP)');
+      })
+      .catch((err) => {
+        logger.warn({ err }, 'decision memory reload failed');
+      });
+  });
+
   const bedrock = new BedrockRuntimeClient(awsClientConfig(config));
   const classifier = new HaikuClassifier({
     haikuModelId: config.BEDROCK_CLASSIFIER_MODEL_ID,

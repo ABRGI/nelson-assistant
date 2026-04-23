@@ -99,8 +99,26 @@ On `apply`:
 - For prompt/code changes: edit `nelson-assistant/src/agent/runner.ts` or `nelson-assistant/src/agent/classifier.ts`.
 - Typecheck + tests (`npm run typecheck && npm test` in nelson-assistant).
 - Commit with author `sandeepbaynes <sandeep.baynes@gmail.com>` and a message that references the thread_ts: `"Learning-session fix for thread <thread_ts>: <one-line summary>"`. Do not push. Sandeep pushes at end of session.
+- **Write a decision record.** If the failure class is a root-cause pattern (not a one-off), distil it into `decisions/<slug>.json` so the next similar question pre-loads the lesson. Pipe the JSON to `scripts/write-decision.js` — it saves and SIGHUPs the dev server for an immediate live reload:
 
-Record in the session log (a running in-memory list): `{threadTs, failureClass, fix, fileTouched, status: applied|modified|dropped}`.
+  ```bash
+  cat <<'EOF' | node scripts/write-decision.js
+  {
+    "slug": "kebab-case-topic",
+    "failure_pattern": "One-sentence description of the failure class.",
+    "recognise_phrases": ["short fragment 1", "short fragment 2"],
+    "correct_behaviour": "What the bot MUST do when it sees this pattern.",
+    "wrong_behaviour": "What the bot tends to do instead.",
+    "related_leaves": ["knowledge/nelson/<leaf>.yaml#section"],
+    "related_commits": ["<shortsha>"],
+    "source_threads": ["<threadTs>"]
+  }
+  EOF
+  ```
+
+  Reusing a slug upserts. Skip this only for genuinely single-case fixes (typos, one-thread-only artefacts). Field guide is identical to the `/debug` skill's step 4.5.
+
+Record in the session log (a running in-memory list): `{threadTs, failureClass, fix, fileTouched, decisionSlug?, status: applied|modified|dropped}`.
 
 ## 5 · End-of-session summary
 

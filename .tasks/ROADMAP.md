@@ -33,6 +33,7 @@ Single source of truth for "what state is this project in, what's next, and what
 | Question similarity + frequency clustering | ⬜ Phase F | after Phase E — embeds + cluster + elevate top-K to pre-injection |
 | dateMode selection HARD rule (ARRIVAL vs EXACT vs STAY vs CREATED) | ✅ done (2026-04-22) | `endpoints/reservations.yaml#dateMode_semantics` + runner seed — DB-verified user-phrasing → mode map; query-param logging on `nelson_api` tool |
 | Decision memory (`decisions/<topic-slug>.json`) | ✅ done (2026-04-23) | `src/state/decisions.ts` — schema + load/save + phrase match (case-insensitive, ranked by specificity, tenant-scoped, cap 3/turn). Matches at pipeline start; prepended above thread state + leaf content in Sonnet's system prompt. Seeded 4 decisions; 11 tests green. `scripts/seed-decisions.js` is the idempotent writer. |
+| Auto-write decisions from `/debug` + `/learning` | ✅ done (2026-04-23) | `scripts/write-decision.js` pipes stdin JSON to `saveDecision` and SIGHUPs the dev server; `src/index.ts` SIGHUP handler reloads decision memory in place. Both skill docs updated with the step and the JSON shape. |
 | File uploads from Slack (`file_share` subtype) | ⬜ todo | download via bot token, save to worktree, pass path in prompt |
 | Deferred agent tools (`psql`, `download_report`, `playwright`) | ⬜ todo | unit-testable, no Slack needed |
 | `@mentions` in channels | ⬜ untested | handler wired; bot needs to be invited to a channel to verify |

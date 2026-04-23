@@ -100,6 +100,44 @@ EOF
 
 If the fix is more involved (>10 min of work, requires schema changes, new env vars, etc.) post an intermediate status update first so Sandeep sees progress.
 
+## 4.5 · Write a decision record
+
+If the fix was a **root-cause pattern** (not a one-off typo), distil it into a `decisions/<slug>.json` entry so the next time a similar question arrives Sonnet sees the lesson before reaching for tools. Skip this only when the fix is genuinely single-case (a typo, a temporary config, a one-thread-only artefact).
+
+Build the JSON in-session, then pipe to `scripts/write-decision.js` — it saves the record and SIGHUPs the dev server so the live pipeline picks it up immediately.
+
+```bash
+cat <<'EOF' | node scripts/write-decision.js
+{
+  "slug": "kebab-case-topic",
+  "failure_pattern": "One-sentence description of the failure class.",
+  "recognise_phrases": [
+    "short fragment 1",
+    "short fragment 2",
+    "short fragment 3"
+  ],
+  "correct_behaviour": "What the bot MUST do when it sees this pattern.",
+  "wrong_behaviour": "What the bot tends to do instead.",
+  "related_leaves": ["knowledge/nelson/kpis.yaml#section"],
+  "related_commits": ["<shortsha>"],
+  "source_threads": ["<threadTs>"]
+}
+EOF
+```
+
+Field guide:
+- `slug` — kebab-case, stable. Reusing an existing slug UPDATES the record (upsert).
+- `recognise_phrases` — 3–10 short, specific fragments. Matched case-insensitively via substring, ranked by length (longer = more specific). Avoid single common words.
+- `correct_behaviour` — imperative, concrete. Include canonical SQL names, endpoint names, hard rules. This gets pre-injected above the leaf content in Sonnet's system prompt.
+- `related_commits` — the shortsha(s) of the fix commit(s).
+- `source_threads` — the Slack `threadTs` of the debug thread.
+- `tenantId` (optional) — scope to one tenant if the fix is tenant-specific.
+
+Confirm in the dev-server log:
+```bash
+grep -E "decision memory (loaded|reloaded)" /tmp/nelson-assistant-dev/server.log | tail -3
+```
+
 ## 5 · When to NOT fix and reply instead
 
 Some debug messages are questions, not bug reports. If Sandeep writes `debug what's the current deep_research count for this thread?` — just answer on Slack, no code change. If he writes `debug show me the classifier verdict for my last message` — pull the log + post the relevant fields.
