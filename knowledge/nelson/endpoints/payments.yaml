@@ -1,7 +1,8 @@
 schema: 1
 node: endpoints/payments
-purpose: Payment history, refunds, payment links, manual payments, Fennoa invoicing.
-related: [.claude/knowledge/enums.yaml, .claude/knowledge/tasks.yaml]
+purpose: Payment history, refunds, payment links, manual payments, Fennoa invoicing, plus invoice-volume KPI questions ("how many invoices issued for stays on date X").
+when_to_load: Any question about payments, refunds, payment state, invoices (manual or Fennoa), sales-invoices, credit notes, invoice-no lookup, Fennoa consolidation, advance-invoice eligibility, draft payments, or "invoices issued for <date/period>".
+related: [.claude/knowledge/enums.yaml, .claude/knowledge/tasks.yaml, .claude/knowledge/kpis.yaml]
 
 destructive_rule: All refund / manual-payment / payment-link endpoints are DESTRUCTIVE. The assistant must ALWAYS escalate before calling any of these.
 
@@ -116,3 +117,61 @@ invoice_details:
 fake_endpoints_for_test_profile:
   - FakePaymentController replaces Paytrail v1 in `fake` profile
   - FakeTylPaymentController replaces Tyl in `fake` profile
+
+how_to_answer_invoice_volume_questions:
+  # User asks "how many invoices have been issued for stays on <date>", "what
+  # invoices exist for May 5th stays across all hotels", "invoice count for
+  # <period>". These are KPI-style questions about invoice materialisation,
+  # distinct from payment volume. Sonnet dropped into deep_research on this
+  # pattern (thread 1776901763) before this section existed.
+  phrasings_covered:
+    - "what invoices have been issued for stays on <date>"
+    - "how many invoices for <period>"
+    - "invoice count across hotels for <stay_date>"
+    - "list invoices for May 5th stays"
+    - "invoices issued for reservations arriving/staying on X"
+  two_distinct_dates:
+    invoice_date: The date the invoice was created/issued. Column: payment.created (Nelson's materialisation timestamp) or, for Fennoa, the Fennoa-side `invoice_date`.
+    stay_date: The date the reservation covers (check_in). Column: reservation.check_in.
+    user_intent_mapping:
+      - "invoices issued for stays on X"     → GROUP BY reservation where check_in = X, with invoice existence filter
+      - "invoices issued on X"               → filter on invoice issuance date directly
+      - "invoices for stays this week"       → check_in BETWEEN
+  preferred_path:
+    api_first:
+      - GET /api/management/secure/manual-invoice/reservations-count → filtered by hotelIds + date. Returns a count without pulling every row.
+      - Pair with GET /api/management/secure/manual-invoice/reservations for the detail list.
+      - For Fennoa-issued (consolidated) invoices: GET /api/management/secure/fennoa/sales-invoice/consolidated with date params.
+    db_fallback:
+      # Use when the API shape doesn't match the question (e.g. "per-hotel
+      # invoice totals for May 5th stays"). Authoritative.
+      pattern: |
+        -- Invoices whose linked reservation is for a stay on <stay_date>, grouped by hotel.
+        SELECT h.label, COUNT(DISTINCT p.id)::int AS invoices_issued
+          FROM nelson.payment p
+          JOIN nelson.reservation r ON r.id = p.reservation_id
+          JOIN nelson.hotel h        ON h.id = r.hotel_id
+         WHERE DATE(r.check_in) = $1::date
+           AND p.status IN ('COMPLETED','REFUND_CREATED')     -- state filter = issued
+           AND p.is_draft_consolidated_invoice = false        -- drafts are not "issued"
+         GROUP BY h.label
+         ORDER BY h.label;
+      column_verification_required: |
+        Run \`\\d nelson.payment\` once via psql to verify the actual column
+        names on THIS tenant — payment schema has evolved; the columns used
+        here (status, is_draft_consolidated_invoice) are the common shape
+        but may need adjustment. Cite the schema-check result in the Source.
+  never_confuse:
+    - "invoices issued" ≠ "payments received". A guest can pay without an
+      invoice (DIRECT channel often); an invoice can exist without full
+      payment (Fennoa credit line). Treat as separate counts.
+    - "draft consolidated invoice" rows in payment table are NOT issued
+      invoices yet — filter them out.
+    - Fennoa-side issuance (sales_invoice.by_no) and Nelson-side payment
+      materialisation (payment.status=COMPLETED) are two different systems.
+      For "what the user sees as issued" — Nelson's payment/manual_invoice
+      tables are the right source.
+  default_breakdown:
+    - When the answer is a count across multiple hotels, ALWAYS return the
+      per-hotel breakdown + total (per output-format.yaml). Never collapse
+      to a single scalar without the breakdown unless user asked for it.

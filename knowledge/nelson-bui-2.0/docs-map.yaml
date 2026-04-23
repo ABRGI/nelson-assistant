@@ -55,7 +55,18 @@ component_location_hints:
   zustand_stores:            src/stores/*.ts (see docs/02-state-management.md)
   feature_flags_usage:       search for GlobalHotelConfig.feature. (see docs/06-feature-flags.md)
   payments_integration:      src/pages/booking/payment/** + docs/05-payments.md
-  breakfast_and_extras_upsell: src/pages/booking/extras/** — content text is NOT here, it comes from nelson-client-configuration (see cross-repo/content-map.yaml). To change the displayed times/prices, update the content repo, not the BUI.
+  breakfast_and_extras_upsell:
+    directory: src/pages/booking/extras/**
+    likely_component_names: [BreakfastExtra, ExtraCard, ExtrasList, ExtraProducts, ExtraRow, ExtraItem]
+    parent_page: src/pages/booking/extras/ExtrasPage.tsx (or equivalent index file under that directory)
+    content_location: NOT in the BUI repo — the displayed breakfast/ECI/LCO times and prices come from `nelson-client-configuration/src/config/<client>/*.json`. See cross-repo/content-map.yaml. To CHANGE the displayed string/price/hours, update the content repo, not the BUI.
+    component_vs_content_rule: |
+      If the user asks "which component renders the breakfast upsell?" the
+      answer is in the BUI (src/pages/booking/extras/**). If the user asks
+      "how do I change the breakfast times shown?" or "the breakfast
+      description is wrong", the answer is in nelson-client-configuration.
+      Disambiguate BEFORE calling deep_research — many past threads wasted
+      source reads because the wrong repo was searched.
   hotel_selector_and_search: src/pages/booking/search/**
   auth_and_sign_in:          src/pages/auth/** + docs/08-security.md
 
