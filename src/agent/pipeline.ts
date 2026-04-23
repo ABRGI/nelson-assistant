@@ -16,6 +16,7 @@ import {
   mergeSignalsIntoState,
   recordTurnCompleted,
 } from '../state/thread-state.js';
+import { matchDecisions, renderDecisionsForPrompt, type Decision } from '../state/decisions.js';
 import { ThreadProgressMessage } from '../slack/renderer.js';
 import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
 import type { HaikuClassifier, ClassifierResult } from './classifier.js';
@@ -44,6 +45,11 @@ export interface PipelineDeps {
   psqlPool?: import('pg').Pool;
   store: import('../state/types.js').JsonStore;
   knownHotelLabels: string[];
+  // Pre-loaded decision memory — matched per-turn against the user's question
+  // + classifier's effective_question and prepended to Sonnet's system prompt.
+  // Refreshed at boot (or on SIGHUP later). No Bedrock cost, just a substring
+  // scan per turn.
+  decisions: Decision[];
   escalationSlackUserId: string;
   authCallbackBaseUrl: string;
   resolveTenant: () => ClientRecord;
@@ -230,12 +236,28 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
     progress.update(':books: Loading the right playbook…');
     const picked = await deps.leafPicker.pick(effectiveText);
     const leafInjection = renderInjection(deps.knowledge, picked.leaves);
-    // Prepend the rendered thread state so Sonnet sees established hotel scope,
-    // reservation ids, metric cuts, and the prior-turn summary before the leaf
-    // content. Empty string when this is the first turn.
-    const knowledgeInjection = renderedThreadContext
-      ? `${renderedThreadContext}\n\n${leafInjection}`
-      : leafInjection;
+    // Match decision memory against the effective question + the user's raw
+    // text — so a decision recorded during a /debug session shows up BEFORE
+    // Sonnet reaches for tools.
+    const matchedDecisions = matchDecisions(
+      `${effectiveText}\n${job.text}`,
+      deps.decisions,
+      { tenantId: tenant.tenantId },
+    );
+    const renderedDecisions = renderDecisionsForPrompt(matchedDecisions);
+    if (matchedDecisions.length > 0) {
+      logEvent('tool_use', {
+        name: 'decision_matcher',
+        output: { matched: matchedDecisions.map((d) => ({ slug: d.slug, version: d.version })) },
+      }, tenant.tenantId);
+    }
+    // Layering (top to bottom): decisions > thread state > leaf content.
+    // Decisions are the most authoritative (distilled fixes from past
+    // /debug/learning sessions); thread state carries established scope;
+    // leaves are the reference material.
+    const knowledgeInjection = [renderedDecisions, renderedThreadContext, leafInjection]
+      .filter((part): part is string => typeof part === 'string' && part.length > 0)
+      .join('\n\n');
     logEvent('tool_use', {
       name: 'leaf_picker',
       input: { question: effectiveText, ...(effectiveText !== job.text ? { originalUserText: job.text } : {}) },

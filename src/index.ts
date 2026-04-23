@@ -32,6 +32,7 @@ import { loadKnowledgeBundle } from './knowledge/loader.js';
 import { loadTenantHotelsFromBundle } from './knowledge/tenant-hotels.js';
 import { LeafPicker } from './knowledge/picker.js';
 import { buildPsqlPool } from './agent/tools/psql.js';
+import { loadAllDecisions } from './state/decisions.js';
 
 const DEFAULT_PROJECT = 'nelson';
 // Knowledge graph lands on `develop` first; switch to 'master' once the team's
@@ -73,6 +74,9 @@ async function main(): Promise<void> {
     ? buildPsqlPool(config.runtime.psqlReadOnlyUrl)
     : undefined;
   if (psqlPool) logger.info('psql observer pool initialised');
+
+  const decisions = await loadAllDecisions(store);
+  logger.info({ count: decisions.length }, 'decision memory loaded');
 
   const bedrock = new BedrockRuntimeClient(awsClientConfig(config));
   const classifier = new HaikuClassifier({
@@ -121,6 +125,7 @@ async function main(): Promise<void> {
     ...(psqlPool ? { psqlPool } : {}),
     store,
     knownHotelLabels: tenantHotels.hotels.map((h) => h.label),
+    decisions,
     escalationSlackUserId: config.ESCALATION_SLACK_USER_ID,
     authCallbackBaseUrl: config.AUTH_CALLBACK_BASE_URL,
     resolveTenant,
