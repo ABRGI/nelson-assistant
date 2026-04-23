@@ -10,23 +10,22 @@ queries:
   today_arrivals_one_hotel:
     params: [hotel_id (bigint)]
     sql: |
-      SELECT r.uuid, r.code, r.start_date, r.end_date, r.adults, r.children, r.state,
-             c.first_name, c.last_name, c.email
-        FROM reservation r
-        LEFT JOIN customer c ON r.customer_id = c.id
+      SELECT r.uuid, r.reservation_code, r.check_in, r.check_out, r.adults, r.children, r.state,
+             r.customer_first_name, r.customer_last_name, r.customer_email
+        FROM nelson.reservation r
        WHERE r.hotel_id = $1
-         AND r.start_date = CURRENT_DATE
-         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE')
-       ORDER BY r.code;
+         AND DATE(r.check_in) = CURRENT_DATE
+         AND r.state = 'CONFIRMED'
+       ORDER BY r.check_in, r.reservation_code;
 
   arrivals_many_hotels:
     params: [hotel_ids (bigint[])]
     sql: |
       SELECT h.label, count(*) AS arrivals
-        FROM reservation r JOIN hotel h ON r.hotel_id = h.id
+        FROM nelson.reservation r JOIN nelson.hotel h ON r.hotel_id = h.id
        WHERE r.hotel_id = ANY($1::bigint[])
-         AND r.start_date = CURRENT_DATE
-         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE')
+         AND DATE(r.check_in) = CURRENT_DATE
+         AND r.state = 'CONFIRMED'
        GROUP BY h.label
        ORDER BY h.label;
 
@@ -88,11 +87,11 @@ queries:
 
   bookings_by_channel_last_30d:
     sql: |
-      SELECT r.channel, count(*) AS n
-        FROM reservation r
-       WHERE r.created_ts >= now() - interval '30 days'
-         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE')
-       GROUP BY r.channel
+      SELECT r.booking_channel, count(*) AS n
+        FROM nelson.reservation r
+       WHERE r.confirmed >= now() - interval '30 days'
+         AND r.state = 'CONFIRMED'
+       GROUP BY r.booking_channel
        ORDER BY n DESC;
 
   dirty_rooms_by_hotel:

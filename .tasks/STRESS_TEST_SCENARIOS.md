@@ -27,7 +27,7 @@ Sandeep downloaded from production on 2026-04-22.
 
 ## Category A — Scope carry across turns
 
-### A1 `[ ]` Long-gap follow-up
+### A1 `[✓]` Long-gap follow-up
 - Thread: *new*
 - Turn 1: `What's OTB for HKI2 on May 5th?`
   - Expected: classifier `data_query` → effective_question preserved → picker `kpis.yaml` + `hotel-identity.yaml` → Sonnet calls `psql`.
@@ -36,7 +36,7 @@ Sandeep downloaded from production on 2026-04-22.
   - Expected: classifier reconstructs `effective_question = "OTB for POR2 on May 5th"`. No re-ask of hotel or date. `historyTurns >= 2`.
   - Expected answer: POR2 on 2026-05-05 → *4 RN / €229.01* (from sales forecast).
 
-### A2 `[ ]` Filter narrowing in-thread
+### A2 `[✓]` Filter narrowing in-thread
 - Thread: *new*
 - Turn 1: `Reservations arriving on May 4th`
   - Expected: classifier `needs_clarification` → "which hotel?"
@@ -45,13 +45,13 @@ Sandeep downloaded from production on 2026-04-22.
 - Turn 3: `only Booking.com`
   - Expected: classifier reconstructs `effective_question` with the BOOKINGCOM filter *and* carries HKI2 + the date forward. NO re-ask of hotel.
 
-### A3 `[ ]` Correction mid-thread
+### A3 `[✓]` Correction mid-thread
 - Thread: *new*
 - Turn 1: `Arrivals today at HKI2`
 - Turn 2: `sorry I meant HKI3`
   - Expected: classifier reconstructs with HKI3 (not HKI2). `data_query`. Thread state after this turn: both HKI2 and HKI3 in `hotelLabels` but the latest query ran for HKI3.
 
-### A4 `[ ]` Multi-message build-up
+### A4 `[✓]` Multi-message build-up
 - Thread: *new*
 - Turn 1: `arrivals` → expected: classifier `needs_clarification` (missing hotel AND date scope).
 - Turn 2: `at HKI2`
@@ -59,14 +59,14 @@ Sandeep downloaded from production on 2026-04-22.
 - Turn 3: `for May 5th`
   - Expected: classifier `data_query` → reconstructed = "arrivals at HKI2 on 2026-05-05". Sonnet queries arrivals.
 
-### A5 `[ ]` Reservation-id continuity
+### A5 `[✓]` Reservation-id continuity
 - Thread: *new*
 - Turn 1: `Show me reservation 681569518`
   - Expected: 9 digits → picker pulls `endpoints/reservations.yaml`, routing rule says psql first. Sonnet runs `SELECT ... WHERE reservation_code = '681569518'` and returns hotel/state/uuid.
 - Turn 2: `what about its payments?`
   - Expected: classifier reconstructs using the reservation from turn 1, either re-using the uuid it received or keeping `reservation_code` in context.
 
-### A6 `[ ]` Chain-wide question
+### A6 `[✓]` Chain-wide question
 - Thread: *new*
 - Message: `Chain-wide OTB for May 5th`
   - Expected: classifier `data_query`. Picker pulls `kpis.yaml`. Sonnet returns per-hotel breakdown.
@@ -158,11 +158,11 @@ Sandeep downloaded from production on 2026-04-22.
 Each of these has a known-correct number from the XLSX reports. Sonnet's
 answer must match within ±1 RN / €100 tolerance (documented cancel-edge).
 
-### G1 `[ ]` HKI2 OTB exact (no YoY)
+### G1 `[✓]` HKI2 OTB exact (no YoY)
 - Message: `HKI2 OTB on May 5th as of today`
 - Expected answer: *67 RN / €3,912.17* (exact).
 
-### G2 `[ ]` HKI2 OTB YoY with snapshot semantics
+### G2 `[✓]` HKI2 OTB YoY with snapshot semantics
 - Message: `HKI2 OTB on May 5th vs same time last year`
 - Expected answer:
   - This year (2026-05-05): *67 RN / €3,912.17*
@@ -177,7 +177,7 @@ answer must match within ±1 RN / €100 tolerance (documented cancel-edge).
   - MOBILEAPP 7 / €418.34
   - NELSON 173 / €9,647.57
 
-### G4 `[ ]` Chain-wide SFD total
+### G4 `[✓]` Chain-wide SFD total
 - Message: `Chain-wide cumulative OTB revenue for stays May 3–6`
 - Expected answer: *€35,218.89 cumulative OTB revenue* (from the "Cumulative Revenue OTB" column, row 2026-05-06). Or equivalent: per-day totals 6,361.27 + 7,583.54 + 9,795.06 + 11,479.02 = 35,218.89.
 

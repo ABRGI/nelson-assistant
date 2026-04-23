@@ -41,11 +41,11 @@ tasks:
     note: DO NOT use /api/management/secure/reservations/arrivals — broken, see bugs.yaml.
     sql: |
       SELECT r.uuid, r.code, r.start_date, r.end_date, r.adults, r.children, r.state
-        FROM reservation r
+        FROM nelson.reservation r
        WHERE r.hotel_id = ANY($1::bigint[])
-         AND r.start_date = CURRENT_DATE
-         AND r.state IN ('CONFIRMED','CHECK_IN_INCOMPLETE')
-       ORDER BY r.start_date, r.code;
+         AND DATE(r.check_in) = CURRENT_DATE
+         AND r.state = 'CONFIRMED'
+       ORDER BY r.check_in, r.reservation_code;
     when_sql: User asks across MANY hotels at once, or wants a count/aggregate.
 
   today_departures:

@@ -12,3 +12,7 @@ tokens
 infra/cdk.out
 infra/cdk.context.json
 infra/node_modules
+# Production-data XLSX / CSV dropped in for dev testing — never commit.
+.test_data
+# Ephemeral scratch file used by the task-prompt loader.
+.tasks/taskprompt.txt

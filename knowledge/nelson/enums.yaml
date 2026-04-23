@@ -9,7 +9,7 @@ authority_and_freshness:
   # Values marked ✓DB are DISTINCT-verified against production DB via the
   # observer connection. Values marked ✓source come from the nelson repo
   # (application enums not backed by pg_enum / not present in DB).
-  last_db_refresh: 2026-04-22
+  last_db_refresh: 2026-04-23
   connection: observer_user via PSQL_READ_ONLY_URL (nelson schema)
   pg_enum_note: |
     Only 5 PostgreSQL-native enums exist in the `nelson` schema

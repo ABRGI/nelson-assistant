@@ -44,7 +44,7 @@ error_patterns:
       message_substring: "hotel is null"
       endpoint: GET /api/management/secure/reservations/arrivals
     root_cause: Endpoint is broken (see bugs.yaml).
-    mitigation: Use GET /api/management/secure/reservations with dateMode=EXACT + startDate=today + endDate=today.
+    mitigation: Use GET /api/management/secure/reservations with *dateMode=ARRIVAL* (NOT EXACT — EXACT silently returns 0 for general arrival questions) + startDate=today + endDate=today + hotelIds. See endpoints/reservations.yaml#dateMode_semantics.
 
   api_price_404_numeric_id:
     symptom:
