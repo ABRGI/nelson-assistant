@@ -44,6 +44,8 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
+# Knowledge bundle is read at boot by src/knowledge/loader.ts — must ship in the image.
+COPY knowledge ./knowledge
 
 # EFS mount point for git worktrees (provided by ECS task definition in prod)
 RUN mkdir -p /work
