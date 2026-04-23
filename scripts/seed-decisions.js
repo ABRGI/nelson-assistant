@@ -31,7 +31,6 @@ async function main() {
       related_leaves: ['knowledge/nelson/kpis.yaml#otb_at_snapshot', 'knowledge/nelson/kpis.yaml#otb_and_sales_forecast'],
       related_commits: ['2929db3', '866437d', '0942648'],
       source_threads: ['1776862642.256219', '1776863227.002729', '1776864056.540009'],
-      related_leaves_suffix: undefined,
     },
     {
       schema: 1,
@@ -90,8 +89,6 @@ async function main() {
   ];
 
   for (const d of DECISIONS) {
-    // strip the experimental field we accidentally added on one record
-    if ('related_leaves_suffix' in d) delete d.related_leaves_suffix;
     await saveDecision(store, d);
     console.log(`✓ saved decisions/${d.slug}.json`);
   }

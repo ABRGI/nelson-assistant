@@ -45,10 +45,6 @@ export interface PipelineDeps {
   psqlPool?: import('pg').Pool;
   store: import('../state/types.js').JsonStore;
   knownHotelLabels: string[];
-  // Pre-loaded decision memory — matched per-turn against the user's question
-  // + classifier's effective_question and prepended to Sonnet's system prompt.
-  // Refreshed at boot (or on SIGHUP later). No Bedrock cost, just a substring
-  // scan per turn.
   decisions: Decision[];
   escalationSlackUserId: string;
   authCallbackBaseUrl: string;
@@ -236,14 +232,8 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
     progress.update(':books: Loading the right playbook…');
     const picked = await deps.leafPicker.pick(effectiveText);
     const leafInjection = renderInjection(deps.knowledge, picked.leaves);
-    // Match decision memory against the effective question + the user's raw
-    // text — so a decision recorded during a /debug session shows up BEFORE
-    // Sonnet reaches for tools.
-    const matchedDecisions = matchDecisions(
-      `${effectiveText}\n${job.text}`,
-      deps.decisions,
-      { tenantId: tenant.tenantId },
-    );
+    const matchQuestion = effectiveText === job.text ? job.text : `${effectiveText}\n${job.text}`;
+    const matchedDecisions = matchDecisions(matchQuestion, deps.decisions, { tenantId: tenant.tenantId });
     const renderedDecisions = renderDecisionsForPrompt(matchedDecisions);
     if (matchedDecisions.length > 0) {
       logEvent('tool_use', {
@@ -251,10 +241,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         output: { matched: matchedDecisions.map((d) => ({ slug: d.slug, version: d.version })) },
       }, tenant.tenantId);
     }
-    // Layering (top to bottom): decisions > thread state > leaf content.
-    // Decisions are the most authoritative (distilled fixes from past
-    // /debug/learning sessions); thread state carries established scope;
-    // leaves are the reference material.
+    // Ordering: most-authoritative first (decisions > thread state > leaves).
     const knowledgeInjection = [renderedDecisions, renderedThreadContext, leafInjection]
       .filter((part): part is string => typeof part === 'string' && part.length > 0)
       .join('\n\n');
