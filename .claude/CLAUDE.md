@@ -71,6 +71,7 @@ In development:
 - **Errors**: throw typed errors; don't swallow. `ConditionFailedError` is the only retry-on-race signal — everything else propagates.
 - **Comments**: only for non-obvious *why*. No narrative comments. No emojis except in user-facing Slack messages.
 - **Scope discipline**: new code lands behind the same interface abstractions as existing code (`JsonStore`, `SecretVault`). Don't import `S3Client` or `SecretsManagerClient` from consumer code.
+- **Training & analytics runs locally** (for now): `/train`, `/learning`, `/debug`-driven refreshes, `/topic-analysis`, and bundle-gap runs all execute on the GCP dev VM, not on the deployed ECS task. Sandeep wants eyes on frequency maps + knowledge diffs before they ship. Every training-style job DMs Sandeep a summary on completion via `ESCALATION_SLACK_USER_ID` — use `scripts/_slack-notify.js#notifyAdmin` for new ones. The lift to deployed infra is a late-roadmap task; do not pre-empt it.
 
 ## Adding a new Agent tool
 

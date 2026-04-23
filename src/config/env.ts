@@ -26,6 +26,7 @@ const BootEnvSchema = z.object({
   BEDROCK_CLASSIFIER_MODEL_ID: z.string().default('eu.anthropic.claude-haiku-4-5-20251001-v1:0'),
   BEDROCK_LEAF_PICKER_MODEL_ID: z.string().default('eu.anthropic.claude-haiku-4-5-20251001-v1:0'),
   BEDROCK_CONFIDENCE_MODEL_ID: z.string().default('eu.anthropic.claude-haiku-4-5-20251001-v1:0'),
+  BEDROCK_EMBEDDING_MODEL_ID: z.string().default('amazon.titan-embed-text-v2:0'),
   ESCALATION_SLACK_USER_ID: z.string().min(1),
   // Global Nelson auth — user-management-service covers every tenant/env.
   // Both login and refresh-token exchange go through POST /api/user/login.

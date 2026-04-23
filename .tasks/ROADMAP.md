@@ -30,7 +30,8 @@ Single source of truth for "what state is this project in, what's next, and what
 | Classifier full-thread context + promise coercion | ✅ done (2026-04-22) | no trim, `conversations.replies` scoped, past + future promise patterns rerouted to data_query |
 | Slack reply hardening (chunking + mrkdwn) | ✅ done (2026-04-22) | `splitForSlack` for >3800 chars; full mrkdwn cheatsheet in runner seed |
 | Analytics on chatlog (slow queries, deep_research triggers → leaf-gap list) | ✅ done (2026-04-23) | `src/analytics/bundle-gap.ts` — aggregates per-thread cost/tools/confidence/feedback, flags by threshold, persists to `analytics/bundle-gaps/<date>.json`. CLI at `scripts/run-bundle-gap-analysis.js`. 9 tests green. `/learning` skill updated to consume the pre-computed report. |
-| Question similarity + frequency clustering | ⬜ Phase F | after Phase E — embeds + cluster + elevate top-K to pre-injection |
+| Question similarity + frequency clustering (Phase F.1) | ✅ done (2026-04-23) | `src/analytics/topics.ts` — reads chatlog → Titan v2 embeddings (cached at `analytics/embeddings/<hash>.json`) → agglomerative cosine clustering → `analytics/topics/<date>.json`. CLI at `scripts/run-topic-analysis.js`, Claude Code skill at `.claude/skills/topic-analysis/`. Cron on the GCP dev VM invokes `claude -p "/topic-analysis --save --notify"` nightly at 03:00 UTC; DMs Sandeep a summary. 13 new tests green. |
+| Cluster hints in Sonnet pre-injection (Phase F.2) | ⬜ todo | next — pre-inject top-K cluster reps (parallel to decision memory) so common topics load before tool use. Reads from `analytics/topics/<latest>.json`. |
 | dateMode selection HARD rule (ARRIVAL vs EXACT vs STAY vs CREATED) | ✅ done (2026-04-22) | `endpoints/reservations.yaml#dateMode_semantics` + runner seed — DB-verified user-phrasing → mode map; query-param logging on `nelson_api` tool |
 | Decision memory (`decisions/<topic-slug>.json`) | ✅ done (2026-04-23) | `src/state/decisions.ts` — schema + load/save + phrase match (case-insensitive, ranked by specificity, tenant-scoped, cap 3/turn). Matches at pipeline start; prepended above thread state + leaf content in Sonnet's system prompt. Seeded 4 decisions; 11 tests green. `scripts/seed-decisions.js` is the idempotent writer. |
 | Auto-write decisions from `/debug` + `/learning` | ✅ done (2026-04-23) | `scripts/write-decision.js` pipes stdin JSON to `saveDecision` and SIGHUPs the dev server; `src/index.ts` SIGHUP handler reloads decision memory in place. Both skill docs updated with the step and the JSON shape. |
@@ -40,6 +41,7 @@ Single source of truth for "what state is this project in, what's next, and what
 | Horizontal scale (`desiredCount >= 2`) | ⬜ untested | EFS + S3 state safe in theory, untested in practice |
 | Multi-tenant per-query routing from JWT claims | ⬜ todo | Stage 1 uses `DEFAULT_TENANT_ID` |
 | Native Nelson SSO (replace custom sign-in page) | ⬜ todo | coordinate with `nelson-user-management-service` owner |
+| Lift training/analytics crons off the dev VM onto deployed infra | ⬜ todo (late) | Training currently runs locally by design — Sandeep wants eyes on frequency maps, new clusters, and knowledge diffs before they ship. Once the loop is stable + trusted, migrate `/topic-analysis` + `/train` + bundle-gap runs onto EventBridge → `ecs:RunTask` (one-shot Fargate task sharing the S3 state bucket). Do NOT move earlier. |
 
 Legend: ✅ done · ⏳ in progress · ⏸ blocked on external · ⬜ todo
 
