@@ -23,16 +23,6 @@
                     "rtb-0921498874f807c22",
                     "rtb-08c1174d7289889ad"
                 ]
-            },
-            {
-                "tenantid": "prod2",
-                "vpcid": "vpc-941d29f3",
-                "cidr": "10.0.0.0/16",
-                "routetableids": [
-                    "rtb-0921498874f807c22",
-                    "rtb-08c1174d7289889ad"
-                ],
-                "peerregion": "eu-west-1"
             }
         ]
     }
