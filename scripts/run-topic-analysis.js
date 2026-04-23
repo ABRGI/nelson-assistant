@@ -25,20 +25,32 @@ async function main() {
 
   const tsxReq = require('tsx/cjs/api');
   const { FsJsonStore } = tsxReq.require(pathToFileURL(path.resolve('src/state/fs.ts')).href, __filename);
+  const { S3JsonStore } = tsxReq.require(pathToFileURL(path.resolve('src/state/s3.ts')).href, __filename);
   const { TitanEmbedder } = tsxReq.require(pathToFileURL(path.resolve('src/agent/embed.ts')).href, __filename);
   const { buildTopicReport, saveTopicReport } = tsxReq.require(pathToFileURL(path.resolve('src/analytics/topics.ts')).href, __filename);
   const { BedrockRuntimeClient } = require('@aws-sdk/client-bedrock-runtime');
   const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
 
-  const stateRoot = process.env.LOCAL_STATE_ROOT ?? './.local-state';
-  const store = new FsJsonStore(path.join(stateRoot, 'state'));
-
+  const storageMode = process.env.STORAGE_MODE ?? 'fs';
   const region = process.env.AWS_REGION ?? 'eu-central-1';
   const profile = process.env.AWS_PROFILE;
-  const client = new BedrockRuntimeClient({
+  const awsClientConfig = {
     region,
     ...(profile ? { credentials: fromNodeProviderChain({ profile }) } : {}),
-  });
+  };
+  let store;
+  if (storageMode === 'aws') {
+    const bucket = process.env.STATE_BUCKET;
+    if (!bucket) throw new Error('STATE_BUCKET is required when STORAGE_MODE=aws');
+    store = new S3JsonStore(bucket, awsClientConfig);
+    console.error(`Storage: S3 (${bucket}, ${region})`);
+  } else {
+    const stateRoot = process.env.LOCAL_STATE_ROOT ?? './.local-state';
+    store = new FsJsonStore(path.join(stateRoot, 'state'));
+    console.error(`Storage: fs (${stateRoot}/state)`);
+  }
+
+  const client = new BedrockRuntimeClient(awsClientConfig);
   const modelId = process.env.BEDROCK_EMBEDDING_MODEL_ID ?? 'amazon.titan-embed-text-v2:0';
   const embedder = new TitanEmbedder({ modelId, client });
 
