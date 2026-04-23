@@ -9,6 +9,8 @@ interface ClientPeeringConfig {
     cidr: string;
     /** Hub-side route table IDs to add the return route to. */
     routetableids: string[];
+    /** Set when the peer VPC is in a different region from the hub. */
+    peerregion?: string;
 }
 
 export interface NelsonAssistantPeeringStackProps extends cdk.StackProps {
@@ -31,14 +33,22 @@ export class NelsonAssistantPeeringStack extends cdk.Stack {
             : [];
 
         for (const client of clients) {
-            this.peerWith(props.hubVpc, client.tenantid, client.vpcid, client.cidr, client.routetableids);
+            this.peerWith(props.hubVpc, client.tenantid, client.vpcid, client.cidr, client.routetableids, client.peerregion);
         }
     }
 
-    private peerWith(hubVpc: ec2.Vpc, name: string, peerVpcId: string, peerCidr: string, hubRouteTableIds: string[]) {
+    private peerWith(
+        hubVpc: ec2.Vpc,
+        name: string,
+        peerVpcId: string,
+        peerCidr: string,
+        hubRouteTableIds: string[],
+        peerRegion?: string,
+    ) {
         const peering = new ec2.CfnVPCPeeringConnection(this, `Peering-${name}`, {
             vpcId: hubVpc.vpcId,
             peerVpcId,
+            ...(peerRegion ? { peerRegion } : {}),
             tags: [{ key: 'Name', value: `${config.get('environmentname')}-assistant-to-${name}` }],
         });
 
@@ -51,10 +61,12 @@ export class NelsonAssistantPeeringStack extends cdk.Stack {
             });
         });
 
-        // Reminder output so operators know to add the reverse route on the client side.
+        // Export the peering connection id so operators can add the reverse
+        // route on the client side. CloudFormation rejects intrinsic refs in
+        // the Description field, so keep the description literal.
         new cdk.CfnOutput(this, `PeeringNote-${name}`, {
             value: peering.ref,
-            description: `Add route ${hubVpc.vpcCidrBlock} → ${peering.ref} in client ${name}'s route tables`,
+            description: `VPC peering connection id for ${name}. Add the reverse route (hub CIDR -> this peering) in the peer VPC route tables.`,
         });
     }
 }

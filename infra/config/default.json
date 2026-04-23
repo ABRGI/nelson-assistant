@@ -14,6 +14,26 @@
         "cpu": "2048",
         "memory": "8192",
         "desiredcount": 1,
-        "clients": []
+        "clients": [
+            {
+                "tenantid": "shared-rds",
+                "vpcid": "vpc-08b4f8c18b957f2cd",
+                "cidr": "10.10.0.0/16",
+                "routetableids": [
+                    "rtb-0921498874f807c22",
+                    "rtb-08c1174d7289889ad"
+                ]
+            },
+            {
+                "tenantid": "prod2",
+                "vpcid": "vpc-941d29f3",
+                "cidr": "10.0.0.0/16",
+                "routetableids": [
+                    "rtb-0921498874f807c22",
+                    "rtb-08c1174d7289889ad"
+                ],
+                "peerregion": "eu-west-1"
+            }
+        ]
     }
 }
