@@ -11,6 +11,7 @@ import { escalateToHuman, EscalateInputSchema } from './tools/escalate.js';
 import { gitLog, GitLogInputSchema } from './tools/git_log.js';
 import { runDeepResearch, DeepResearchInputSchema } from './tools/deep_research.js';
 import { runPsql, PsqlInputSchema } from './tools/psql.js';
+import { downloadReport, DownloadReportInputSchema } from './tools/download_report.js';
 import type { Pool as PgPool } from 'pg';
 import type { WorktreePool } from '../worktree/pool.js';
 
@@ -104,6 +105,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
       'mcp__nelson__escalate_to_human',
       'mcp__nelson__deep_research',
       'mcp__nelson__psql',
+      'mcp__nelson__download_report',
     ],
     mcpServers: {
       nelson: createSdkMcpServer({
@@ -175,6 +177,18 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
                 input,
               );
               return { content: [{ type: 'text', text: res.summary }] };
+            },
+          ),
+          tool(
+            'download_report',
+            'Download a Nelson API endpoint that returns a file (XLSX / CSV / PDF / JSON) — typical use case: Sales Forecast Daily XLSX, invoice PDF, export endpoints. The base URL and user IdToken are fixed — do not include them. `path` must start with /api/. The file is saved to a temp path on the task filesystem and a preview (first `max_preview_rows` parsed rows for XLSX/CSV; the full JSON for small JSON; metadata for PDF) is returned inline. Use this when the user asks for report totals / snapshot values that come from the Reports UI rather than a live query.',
+            DownloadReportInputSchema.shape,
+            async (input) => {
+              const result = await downloadReport(
+                { client: args.tenant, idToken: args.tokens.idToken, slackUserId: args.askerSlackUserId },
+                input,
+              );
+              return { content: [{ type: 'text', text: JSON.stringify(result) }] };
             },
           ),
           ...(args.psqlPool && args.psqlReadOnlyUrl ? [
