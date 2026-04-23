@@ -43,9 +43,11 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      - channels:history
       - chat:write
       - chat:write.public
       - commands
+      - groups:history
       - im:history
       - im:read
       - im:write
@@ -56,6 +58,8 @@ settings:
   event_subscriptions:
     bot_events:
       - app_mention
+      - message.channels
+      - message.groups
       - message.im
       - reaction_added
       - reaction_removed

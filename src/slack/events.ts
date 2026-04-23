@@ -50,6 +50,51 @@ export function registerEvents(
   });
 
   app.message(async ({ message, client }) => {
+    // Channel thread follow-up: if the bot has already replied in this thread,
+    // keep responding to non-mention messages in the same thread so users don't
+    // have to @nelson on every turn. Only applies when the message is inside a
+    // thread (has thread_ts) and the bot has at least one message in the thread.
+    if (message.channel_type === 'channel' || message.channel_type === 'group') {
+      if (!('thread_ts' in message) || !message.thread_ts) return;
+      if (message.subtype && message.subtype !== 'file_share') return;
+      if (!('text' in message) || !message.text) return;
+      if (message.user === selfUserId) return;
+      const text = message.text.trim();
+      if (!text) return;
+      if (text.startsWith('/')) return;
+      // @mention in a channel fires both app_mention and message.channels —
+      // let app_mention handle those and bail here to avoid double enqueue.
+      if (selfUserId && text.includes(`<@${selfUserId}>`)) return;
+      let botEngaged = false;
+      try {
+        const res = await client.conversations.replies({
+          channel: message.channel,
+          ts: message.thread_ts,
+          limit: 200,
+        });
+        botEngaged = (res.messages ?? []).some((m) => m.user === selfUserId);
+      } catch (err) {
+        logger.debug({ err, threadTs: message.thread_ts }, 'thread engagement check failed');
+        return;
+      }
+      if (!botEngaged) return;
+      if (message.subtype === 'file_share') return;
+      enqueue({
+        kind: 'ask',
+        source: 'thread-follow-up',
+        channel: message.channel,
+        userId: message.user ?? 'unknown',
+        text,
+        threadTs: message.thread_ts,
+        userMessageTs: message.ts,
+      });
+      try {
+        await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'hourglass_flowing_sand' });
+      } catch (err) {
+        logger.debug({ err }, 'failed to add reaction');
+      }
+      return;
+    }
     if (message.channel_type !== 'im') return;
     // file_share is the subtype Slack uses when a user uploads an image /
     // attachment alongside their message. We still want the text portion to

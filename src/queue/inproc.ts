@@ -3,7 +3,7 @@ import { logger } from '../observability/logger.js';
 
 export interface AskJob {
   kind: 'ask';
-  source: 'slash' | 'mention' | 'dm';
+  source: 'slash' | 'mention' | 'dm' | 'thread-follow-up';
   channel: string;
   userId: string;
   text: string;
