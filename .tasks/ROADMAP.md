@@ -32,7 +32,7 @@ Single source of truth for "what state is this project in, what's next, and what
 | Analytics on chatlog (slow queries, deep_research triggers → leaf-gap list) | ✅ done (2026-04-23) | `src/analytics/bundle-gap.ts` — aggregates per-thread cost/tools/confidence/feedback, flags by threshold, persists to `analytics/bundle-gaps/<date>.json`. CLI at `scripts/run-bundle-gap-analysis.js`. 9 tests green. `/learning` skill updated to consume the pre-computed report. |
 | Question similarity + frequency clustering | ⬜ Phase F | after Phase E — embeds + cluster + elevate top-K to pre-injection |
 | dateMode selection HARD rule (ARRIVAL vs EXACT vs STAY vs CREATED) | ✅ done (2026-04-22) | `endpoints/reservations.yaml#dateMode_semantics` + runner seed — DB-verified user-phrasing → mode map; query-param logging on `nelson_api` tool |
-| Decision memory (`decisions/<topic-slug>.json`) | ⬜ Phase E follow-on | distil fixes from `/debug` + `/learning` into indexed records the picker can consult before re-diagnosing |
+| Decision memory (`decisions/<topic-slug>.json`) | ✅ done (2026-04-23) | `src/state/decisions.ts` — schema + load/save + phrase match (case-insensitive, ranked by specificity, tenant-scoped, cap 3/turn). Matches at pipeline start; prepended above thread state + leaf content in Sonnet's system prompt. Seeded 4 decisions; 11 tests green. `scripts/seed-decisions.js` is the idempotent writer. |
 | File uploads from Slack (`file_share` subtype) | ⬜ todo | download via bot token, save to worktree, pass path in prompt |
 | Deferred agent tools (`psql`, `download_report`, `playwright`) | ⬜ todo | unit-testable, no Slack needed |
 | `@mentions` in channels | ⬜ untested | handler wired; bot needs to be invited to a channel to verify |
