@@ -136,13 +136,29 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
     );
 
     const renderedThreadContext = renderThreadStateForPrompt(threadState);
-    const rawVerdict = await deps.classifier.classify(job.text, history, renderedThreadContext);
+    // Surface attachment metadata to the classifier so it doesn't treat
+    // "this report" / "this screenshot" as an unresolved referent and
+    // ask for clarification — the attached file IS the clarification.
+    const classifierInputText = (job.attachments && job.attachments.length > 0)
+      ? `${job.text}\n\n[The user attached ${job.attachments.length} file(s): ${job.attachments.map((f) => `${f.name} (${f.mimetype})`).join(', ')}]`
+      : job.text;
+    const rawVerdict = await deps.classifier.classify(classifierInputText, history, renderedThreadContext);
     // Safety net: if the classifier emits a conversational reply that promises
     // to "run / check / pull / fetch / look up" data — it has no tools, so the
     // promise would be a dead end. Coerce to data_query so Sonnet actually
     // runs. The classifier prompt forbids these phrases but the guard stays
     // here as a hard defense.
-    const verdict = coercePromisesToDataQuery(rawVerdict);
+    let verdict = coercePromisesToDataQuery(rawVerdict);
+    // When the user attached files, a classifier "needs_clarification" or
+    // "conversational" verdict almost always means the classifier ignored the
+    // attachments. Route to data_query so Sonnet + read_attachment handle it.
+    if (job.attachments && job.attachments.length > 0 && verdict.type !== 'data_query') {
+      logger.info(
+        { original: verdict.type, attachmentCount: job.attachments.length },
+        'classifier verdict coerced to data_query — user attached files',
+      );
+      verdict = { type: 'data_query', effective_question: job.text, reason: 'attachments_present', ...(verdict.usage ? { usage: verdict.usage } : {}) };
+    }
     logEvent('classifier_verdict', {
       ...(verdict.type === 'data_query'
         ? { type: 'data_query', ...(verdict.reason ? { reason: verdict.reason } : {}), ...(verdict.effective_question ? { effective_question: verdict.effective_question } : {}) }
