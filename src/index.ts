@@ -162,6 +162,7 @@ async function main(): Promise<void> {
     topicReportRef,
     escalationSlackUserId: config.ESCALATION_SLACK_USER_ID,
     authCallbackBaseUrl: config.AUTH_CALLBACK_BASE_URL,
+    slackBotToken: config.runtime.slackBotToken,
     resolveTenant,
     runtimeCwd: os.tmpdir(),
   });

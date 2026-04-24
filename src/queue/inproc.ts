@@ -10,6 +10,7 @@ export interface AskJob {
   threadTs: string | undefined;
   userMessageTs: string;  // ts of the user's message — used to swap reactions
   responseUrl?: string;
+  attachments?: import('../slack/attachments.js').SlackFile[];
 }
 
 export type JobEnqueuer = (job: AskJob) => void;

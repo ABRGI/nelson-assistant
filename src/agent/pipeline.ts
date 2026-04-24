@@ -21,6 +21,7 @@ import { matchTopicHints, renderTopicHintsForPrompt } from '../state/topic-hints
 import type { TopicReport } from '../analytics/topics.js';
 import { ThreadProgressMessage } from '../slack/renderer.js';
 import { loadConversationHistory, renderHistoryForAgentPrompt } from '../slack/history.js';
+import { downloadSlackAttachments, type LocalAttachment } from '../slack/attachments.js';
 import type { HaikuClassifier, ClassifierResult } from './classifier.js';
 import type { ConfidenceScorer } from './confidence.js';
 import type { LeafPicker } from '../knowledge/picker.js';
@@ -52,6 +53,9 @@ export interface PipelineDeps {
   topicReportRef: { current: TopicReport | null };
   escalationSlackUserId: string;
   authCallbackBaseUrl: string;
+  // Bot token used for direct Slack file downloads (Bolt's WebClient has no
+  // raw file-fetch; Slack's url_private_download needs an Authorization header).
+  slackBotToken: string;
   resolveTenant: () => ClientRecord;
   runtimeCwd: string;              // safe directory for the agent process's cwd (no source access)
 }
@@ -227,7 +231,17 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         'classifier reconstructed user question from clarification answer',
       );
     }
-    const question = renderHistoryForAgentPrompt(history, effectiveText);
+    let attachments: LocalAttachment[] = [];
+    if (job.attachments && job.attachments.length > 0) {
+      progress.update(':paperclip: Downloading your attachment…');
+      attachments = await downloadSlackAttachments({
+        files: job.attachments,
+        botToken: deps.slackBotToken,
+      });
+    }
+    const attachmentsPreamble = renderAttachmentsPreamble(attachments);
+    const questionBody = renderHistoryForAgentPrompt(history, effectiveText);
+    const question = attachmentsPreamble ? `${attachmentsPreamble}\n\n${questionBody}` : questionBody;
 
     // Hot path: pick 1-3 knowledge leaves, pre-inject them into the system
     // prompt. No worktree allocation, no source-code read on the happy path.
@@ -285,6 +299,7 @@ export function makeHandler(deps: PipelineDeps): JobHandler {
         ...(knowledgeInjection ? { knowledgeInjection } : {}),
         ...(deps.psqlReadOnlyUrl ? { psqlReadOnlyUrl: deps.psqlReadOnlyUrl } : {}),
         ...(deps.psqlPool ? { psqlPool: deps.psqlPool } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
         onEvent: (event) => {
           if (event.type === 'assistant') {
             for (const block of event.message.content) {
@@ -575,4 +590,16 @@ async function postSignInPrompt(
       text: 'You need to sign in, but I could not create a link. Try again in a minute.',
     });
   }
+}
+
+function renderAttachmentsPreamble(attachments: LocalAttachment[]): string | undefined {
+  if (attachments.length === 0) return undefined;
+  const lines = attachments.map((a) => `- file_id=\`${a.fileId}\` name=${a.name} mimetype=${a.mimetype} size=${a.sizeBytes}`);
+  return [
+    '=== USER-ATTACHED FILES ===',
+    `The user uploaded ${attachments.length} file(s) alongside this message:`,
+    ...lines,
+    'Call `mcp__nelson__read_attachment` with the relevant `file_id` to inspect contents. Images return as image blocks; text files inline up to ~40 KB; other mimetypes return metadata only (ask the user to paste contents if needed).',
+    '=== END USER-ATTACHED FILES ===',
+  ].join('\n');
 }

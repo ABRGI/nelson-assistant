@@ -12,6 +12,8 @@ import { gitLog, GitLogInputSchema } from './tools/git_log.js';
 import { runDeepResearch, DeepResearchInputSchema } from './tools/deep_research.js';
 import { runPsql, PsqlInputSchema } from './tools/psql.js';
 import { downloadReport, DownloadReportInputSchema } from './tools/download_report.js';
+import { readAttachment, ReadAttachmentInputSchema } from './tools/read_attachment.js';
+import type { LocalAttachment } from '../slack/attachments.js';
 import type { Pool as PgPool } from 'pg';
 import type { WorktreePool } from '../worktree/pool.js';
 
@@ -32,6 +34,9 @@ export interface RunAgentArgs {
   knowledgeInjection?: string;          // pre-picked knowledge leaves rendered as one block
   worktrees: WorktreePool;              // needed for deep_research (it acquires on demand)
   defaultBranch: string;
+  // Slack attachments downloaded for this job — bound to the read_attachment
+  // tool by file id. Empty / omitted when the user didn't upload anything.
+  attachments?: LocalAttachment[];
   onEvent: (event: SDKMessage) => void;
   abortSignal?: AbortSignal;
 }
@@ -106,6 +111,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
       'mcp__nelson__deep_research',
       'mcp__nelson__psql',
       'mcp__nelson__download_report',
+      'mcp__nelson__read_attachment',
     ],
     mcpServers: {
       nelson: createSdkMcpServer({
@@ -179,6 +185,18 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
               return { content: [{ type: 'text', text: res.summary }] };
             },
           ),
+          ...(args.attachments && args.attachments.length > 0 ? [
+            tool(
+              'read_attachment',
+              'Read a file the user uploaded to Slack alongside their message. Images (png/jpeg/webp/gif) are returned as an image block you can see directly. Small text files (txt/csv/md/json) are inlined up to ~40KB. Other mimetypes return metadata only — ask the user to paste relevant content. Reference attachments by the file_id listed in the "User-attached files" preamble of the question; arbitrary paths are rejected. ALWAYS call this tool BEFORE answering when the user attached something relevant to their question.',
+              ReadAttachmentInputSchema.shape,
+              async (input) => {
+                const attachmentMap = new Map((args.attachments ?? []).map((a) => [a.fileId, a]));
+                const result = await readAttachment({ attachments: attachmentMap }, input);
+                return result;
+              },
+            ),
+          ] : []),
           tool(
             'download_report',
             'Download a Nelson API endpoint that returns a file (XLSX / CSV / PDF / JSON) — typical use case: Sales Forecast Daily XLSX, invoice PDF, export endpoints. The base URL and user IdToken are fixed — do not include them. `path` must start with /api/. The file is saved to a temp path on the task filesystem and a preview (first `max_preview_rows` parsed rows for XLSX/CSV; the full JSON for small JSON; metadata for PDF) is returned inline. Use this when the user asks for report totals / snapshot values that come from the Reports UI rather than a live query.',

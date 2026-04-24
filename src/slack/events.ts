@@ -3,6 +3,7 @@ import type { JobEnqueuer } from '../queue/inproc.js';
 import type { ChatLog } from '../observability/chatlog.js';
 import { logger } from '../observability/logger.js';
 import { DEBUG_USER_PREFIX_RE } from './debug.js';
+import { extractSlackFilesFromMessage } from './attachments.js';
 
 const THUMB_REACTIONS = new Set([
   '+1', 'thumbsup', 'thumbs_up',          // 👍 variants
@@ -33,6 +34,7 @@ export function registerEvents(
       userId: event.user ?? 'unknown',
       text,
     })) return;
+    const files = extractSlackFilesFromMessage(event);
     enqueue({
       kind: 'ask',
       source: 'mention',
@@ -41,6 +43,7 @@ export function registerEvents(
       text,
       threadTs: event.thread_ts ?? event.ts,
       userMessageTs: event.ts,
+      ...(files.length ? { attachments: files } : {}),
     });
     try {
       await client.reactions.add({ channel: event.channel, timestamp: event.ts, name: 'hourglass_flowing_sand' });
@@ -79,7 +82,7 @@ export function registerEvents(
           });
           const botEngaged = (res.messages ?? []).some((m) => m.user === selfUserId);
           if (!botEngaged) return;
-          if (message.subtype === 'file_share') return;
+          const files = extractSlackFilesFromMessage(message);
           enqueue({
             kind: 'ask',
             source: 'thread-follow-up',
@@ -88,6 +91,7 @@ export function registerEvents(
             text,
             threadTs,
             userMessageTs: message.ts,
+            ...(files.length ? { attachments: files } : {}),
           });
           try {
             await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'hourglass_flowing_sand' });
@@ -118,9 +122,7 @@ export function registerEvents(
       userId: message.user ?? 'unknown',
       text,
     })) return;
-    // For now, file_share messages that are NOT debug-prefixed fall through
-    // without hitting the agent — the agent can't see file contents yet.
-    if (message.subtype === 'file_share') return;
+    const files = extractSlackFilesFromMessage(message);
     enqueue({
       kind: 'ask',
       source: 'dm',
@@ -129,6 +131,7 @@ export function registerEvents(
       text,
       threadTs: message.thread_ts ?? message.ts,
       userMessageTs: message.ts,
+      ...(files.length ? { attachments: files } : {}),
     });
     try {
       await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'hourglass_flowing_sand' });
