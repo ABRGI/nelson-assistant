@@ -62,18 +62,36 @@ export async function downloadSlackAttachments(
       continue;
     }
     try {
-      // Slack's url_private_download returns 302 to the actual CDN — follow it.
-      // maxRedirections retains the auth header across the hop (undici behaviour).
-      const res = await request(file.url_private_download, {
+      // Slack's url_private_download needs Bearer auth and responds with a
+      // 302 to a pre-signed CDN URL. Follow the redirect manually so we don't
+      // send the Bearer to the CDN (undici strips cross-origin auth headers
+      // when maxRedirections is set, which yielded an HTML error page — 61
+      // KB of "please sign in" masquerading as the file).
+      let finalRes = await request(file.url_private_download, {
         method: 'GET',
         headers: { authorization: `Bearer ${args.botToken}` },
-        maxRedirections: 5,
+        maxRedirections: 0,
       });
-      if (res.statusCode !== 200) {
-        logger.warn({ fileId: file.id, status: res.statusCode }, 'attachment: download non-200 — skipping');
+      if (finalRes.statusCode >= 300 && finalRes.statusCode < 400) {
+        const location = finalRes.headers['location'];
+        const locationUrl = typeof location === 'string' ? location : Array.isArray(location) ? location[0] : undefined;
+        if (!locationUrl) {
+          logger.warn({ fileId: file.id, status: finalRes.statusCode }, 'attachment: redirect without Location — skipping');
+          await finalRes.body.text().catch(() => undefined);
+          continue;
+        }
+        await finalRes.body.text().catch(() => undefined);
+        finalRes = await request(locationUrl, {
+          method: 'GET',
+          maxRedirections: 2,
+        });
+      }
+      if (finalRes.statusCode !== 200) {
+        logger.warn({ fileId: file.id, status: finalRes.statusCode }, 'attachment: download non-200 — skipping');
+        await finalRes.body.text().catch(() => undefined);
         continue;
       }
-      const buf = Buffer.from(await res.body.arrayBuffer());
+      const buf = Buffer.from(await finalRes.body.arrayBuffer());
       if (buf.byteLength > MAX_FILE_BYTES) {
         logger.warn({ fileId: file.id, bytes: buf.byteLength }, 'attachment: actual size exceeds limit — skipping');
         continue;
@@ -88,8 +106,11 @@ export async function downloadSlackAttachments(
         sizeBytes: buf.byteLength,
         filePath,
       });
+      // magicHex lets us tell real-XLSX (504b0304 = PK) from HTML error
+      // pages Slack's CDN sometimes returns (3c21444f = <!DO, 3c68746d = <htm).
+      const magicHex = buf.slice(0, 4).toString('hex');
       logger.info(
-        { fileId: file.id, name: file.name, mimetype: file.mimetype, bytes: buf.byteLength },
+        { fileId: file.id, name: file.name, mimetype: file.mimetype, bytes: buf.byteLength, magicHex },
         'attachment: downloaded',
       );
     } catch (err) {
