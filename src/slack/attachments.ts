@@ -62,9 +62,12 @@ export async function downloadSlackAttachments(
       continue;
     }
     try {
+      // Slack's url_private_download returns 302 to the actual CDN — follow it.
+      // maxRedirections retains the auth header across the hop (undici behaviour).
       const res = await request(file.url_private_download, {
         method: 'GET',
         headers: { authorization: `Bearer ${args.botToken}` },
+        maxRedirections: 5,
       });
       if (res.statusCode !== 200) {
         logger.warn({ fileId: file.id, status: res.statusCode }, 'attachment: download non-200 — skipping');

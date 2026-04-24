@@ -65,6 +65,33 @@ describe('downloadSlackAttachments', () => {
     }
   });
 
+  it('follows 302 redirects from Slack CDN', async () => {
+    const server = createServer((req, res) => {
+      if (req.url === '/f/F1') {
+        // simulate Slack's url_private_download → pre-signed CDN URL redirect
+        res.writeHead(302, { location: `http://127.0.0.1:${(server.address() as AddressInfo).port}/cdn/F1` });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'image/png' });
+      res.end(Buffer.from([10, 20, 30, 40, 50]));
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const { port } = server.address() as AddressInfo;
+
+    const files: SlackFile[] = [
+      { id: 'F1', name: 'redirected.png', mimetype: 'image/png', url_private_download: `http://127.0.0.1:${port}/f/F1` },
+    ];
+
+    try {
+      const out = await downloadSlackAttachments({ files, botToken: 'xoxb-fake' });
+      expect(out).toHaveLength(1);
+      expect(out[0]!.sizeBytes).toBe(5);
+    } finally {
+      server.close();
+    }
+  });
+
   it('skips files that 404 but keeps others', async () => {
     const server = createServer((req, res) => {
       if (req.url?.includes('F2')) {
