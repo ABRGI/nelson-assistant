@@ -73,6 +73,7 @@ settings:
       - reaction_removed
   interactivity:
     is_enabled: true
+    request_url: https://assistant.nelson.management/slack/interactive
   org_deploy_enabled: false
   # Default is OFF (prod uses HTTP delivery to the ALB). Flip to true ONLY
   # when you want to run `npm run dev` on your laptop/VM and drive the bot
