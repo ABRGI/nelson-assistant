@@ -8,6 +8,42 @@ Single source of truth for "what state is this project in, what's next, and what
 
 ---
 
+## Where we are right now (snapshot 2026-04-24)
+
+**Prod is live and stable on image `8ae6a61` (manifest fix on top at `2f79eac`).** ALB at `https://assistant.nelson.management` serving over HTTP, 1 task RUNNING + HEALTHY. Bot state migrated to S3 (decisions, topic report, embeddings). VPC peering to the shared RDS VPC is live end-to-end (CDK + RDS-side routes + SG 5432 + peering DNS). Sonnet-backed pipeline with Haiku classifier, leaf picker, and confidence scorer; decisions + cluster-hints + thread-state + leaves all pre-injected per turn.
+
+Sandeep is letting the bot run as-is for a while to gather real-use signal.
+
+**When you (future session) are asked "what's next", here is the ranked queue.**
+
+### Small, close-now (high ROI, ~30–60 min each)
+
+1. **Install the expanded Slack manifest** — IT still has to approve the new scope set from commit `2f79eac`. Check `/auth.test` response for the new scopes (e.g. `files:write`, `channels:read`, `mpim:*`, `team:read`, `usergroups:read`, `users:read.email`). Until installed, future features gated on those scopes are blocked.
+2. **CI runtime smoke test** — `docker run nelson-assistant:latest node -e "require('./dist/index.js')"` in a GitHub Actions workflow. Would have caught `xlsx` devDep regression + the missing `knowledge/` COPY. Each prod outage from those cost ~7–10 min of downtime.
+3. **Dependabot alerts** — 2 moderate, GitHub nags on every push. Bump + retest.
+
+### Medium, real new value
+
+4. **Audit log under S3 Object Lock** — chatlog has events but isn't tamper-evident. Compliance-grade log splits off under Object Lock. Small CDK + writer. Prerequisite for "delete user data" style compliance stories.
+5. **Slack notifications when training jobs complete** (nice-to-have refresh) — we already have `_slack-notify.js#notifyAdmin` for topic-analysis. Extend to `/train` and bundle-gap.
+
+### Big, strategic
+
+6. **Multi-tenant per-query routing from JWT claims** — biggest Stage-1-is-hacky item. Currently every query goes to Omena Prod (`DEFAULT_TENANT_ID`). Real fix reads `environmentids` claim + routes via the `nelson-tenants` DynamoDB table. Requires: code changes in `src/auth/clients.ts` + `src/agent/pipeline.ts`, task-role IAM addition for `dynamodb:GetItem/Query/Scan` on `nelson-tenants`. Unlocks real multi-tenant.
+7. **Native Nelson SSO** — replace the bot-hosted custom sign-in page. Needs coordination with `nelson-user-management-service` owner to add an OAuth-style authorize+callback flow. Until then, the custom page is the MVP fallback.
+
+### Late / deferred (deliberately — don't pre-empt)
+
+8. **Lift training + analytics crons off the GCP dev VM onto deployed infra** (EventBridge → `ecs:RunTask`). User explicitly wants training local while the loop stabilises.
+9. **`mcp__nelson__playwright.visual_compare`** — deferred, no concrete need yet. Revisit if a real use case emerges.
+
+### Open loose ends worth a look
+
+- Verify the `psql` tool actually works end-to-end against the prod RDS — peering went live but no follow-up "tell me about reservation X" test that I (the previous session) confirmed.
+- Monitor for any Slack app retries / duplicate event handling in prod logs now that `processBeforeResponse: false` is live.
+
+---
+
 ## Status at a glance
 
 | Area | State | Notes |
@@ -35,12 +71,19 @@ Single source of truth for "what state is this project in, what's next, and what
 | dateMode selection HARD rule (ARRIVAL vs EXACT vs STAY vs CREATED) | ✅ done (2026-04-22) | `endpoints/reservations.yaml#dateMode_semantics` + runner seed — DB-verified user-phrasing → mode map; query-param logging on `nelson_api` tool |
 | Decision memory (`decisions/<topic-slug>.json`) | ✅ done (2026-04-23) | `src/state/decisions.ts` — schema + load/save + phrase match (case-insensitive, ranked by specificity, tenant-scoped, cap 3/turn). Matches at pipeline start; prepended above thread state + leaf content in Sonnet's system prompt. Seeded 4 decisions; 11 tests green. `scripts/seed-decisions.js` is the idempotent writer. |
 | Auto-write decisions from `/debug` + `/learning` | ✅ done (2026-04-23) | `scripts/write-decision.js` pipes stdin JSON to `saveDecision` and SIGHUPs the dev server; `src/index.ts` SIGHUP handler reloads decision memory in place. Both skill docs updated with the step and the JSON shape. |
-| File uploads from Slack (`file_share` subtype) | ⬜ todo | download via bot token, save to worktree, pass path in prompt |
-| Deferred agent tools (`psql`, `download_report`, `playwright`) | ⬜ todo | unit-testable, no Slack needed |
-| `@mentions` in channels | ⬜ untested | handler wired; bot needs to be invited to a channel to verify |
-| Horizontal scale (`desiredCount >= 2`) | ⬜ untested | EFS + S3 state safe in theory, untested in practice |
-| Multi-tenant per-query routing from JWT claims | ⬜ todo | Stage 1 uses `DEFAULT_TENANT_ID` |
+| Slack thread follow-ups without re-mention | ✅ done (2026-04-24) | `src/slack/events.ts` — `app.message` channel branch checks `conversations.replies` for bot engagement, fires as `source: thread-follow-up`. ExpressReceiver `processBeforeResponse: false` so Bolt acks inside 3s regardless of handler latency. Manifest adds `channels:history` + `groups:history` + `message.channels` + `message.groups`. |
+| File uploads from Slack | ✅ done (2026-04-24) | `src/slack/attachments.ts` — two-step manual redirect to handle Slack's 302→CDN hop + Bearer-strip behaviour; 10 MB/file × 3 files/job cap; `src/agent/tools/read_attachment.ts` MCP tool — images return as image blocks Sonnet sees directly, XLSX/XLS parsed per-sheet into JSON (first 50 rows), text files (txt/csv/md/json) inlined up to 40 KB. Required `files:read` Slack scope. Attachment metadata appended to classifier input + coerces to data_query when attachments are present. |
+| `mcp__nelson__download_report` tool | ✅ done (2026-04-23) | `src/agent/tools/download_report.ts` — fetches Nelson file endpoints (XLSX/CSV/PDF/JSON), parses preview inline. Same auth as nelson_api. |
+| `@mentions` in channels | ✅ done (2026-04-24) | Verified end-to-end in prod; paired with thread follow-ups. |
+| Horizontal scale (`desiredCount >= 2`) | ✅ verified (2026-04-24) | Sandeep ran multiple parallel threads; no collisions reported. Leaving desiredCount=1 for cost. |
+| Slack manifest hardening — scopes, event URLs, socket default | ✅ done (2026-04-24) | Committed `slack/app-manifest.yml` now fully self-contained for paste+install: `socket_mode_enabled: false` default, per-slash-command URLs, `event_subscriptions.request_url`, `interactivity.request_url`, rationale comments on every scope. Full scope set landed in `2f79eac` so IT only re-approves once (added `files:write`, `channels:read`, `groups:read`, `mpim:*`, `team:read`, `usergroups:read`, `users:read.email`; events `app_uninstalled`, `message.mpim`, `tokens_revoked`). Pending: IT install of the expanded manifest. |
+| VPC peering + DB reachability from prod | ✅ done (2026-04-23/24) | Hub ↔ shared-rds (`pcx-06e836ccd366bbc6d`) deployed via CDK. RDS-side reverse routes, SG 5432 ingress from hub CIDR, peering DNS resolution — all applied same-account. Prod ECS can now reach `prod-saas-nelson-services-db-instance-2.czxbkfeiyttd.eu-central-1.rds.amazonaws.com`. |
+| Multi-tenant per-query routing from JWT claims | ⬜ todo | Stage 1 uses `DEFAULT_TENANT_ID`. Real fix reads `environmentids` claim + routes via `nelson-tenants` DynamoDB. Needs code + task-role IAM for `dynamodb:GetItem/Query/Scan`. |
 | Native Nelson SSO (replace custom sign-in page) | ⬜ todo | coordinate with `nelson-user-management-service` owner |
+| CI runtime smoke test on Docker image | ⬜ todo | `docker run nelson-assistant:latest node -e "require('./dist/index.js')"` gate. Would have caught both xlsx-devDep and missing knowledge-COPY regressions (each cost ~7-10 min prod downtime). Small, high-ROI. |
+| Dependabot vulnerabilities | ⬜ todo | 2 moderate, nagged on every push. ~15 min pass. |
+| Audit log under S3 Object Lock | ⬜ todo | chatlog captures events but isn't tamper-evident; splits off a compliance-grade log. |
+| Playwright visual_compare tool | ⬜ deferred | Big lift (Chromium binary in Docker, pixel diff). Revisit when a concrete need lands. |
 | Lift training/analytics crons off the dev VM onto deployed infra | ⬜ todo (late) | Training currently runs locally by design — Sandeep wants eyes on frequency maps, new clusters, and knowledge diffs before they ship. Once the loop is stable + trusted, migrate `/topic-analysis` + `/train` + bundle-gap runs onto EventBridge → `ecs:RunTask` (one-shot Fargate task sharing the S3 state bucket). Do NOT move earlier. |
 
 Legend: ✅ done · ⏳ in progress · ⏸ blocked on external · ⬜ todo
@@ -176,3 +219,21 @@ Append-only. Newest last.
   - **Slack reply hardening.** Added `splitForSlack` in `src/slack/renderer.ts` so Sonnet replies >3800 chars auto-chunk with "continued above/below" markers (fixes real `msg_too_long` drops). Elevated the Slack-mrkdwn rendering rule in the runner seed with a full cheatsheet: `*single*` bold, NO `**double**`, NO Markdown pipe tables (`| col |`), `<url|label>` links not `[label](url)`, emoji names work, headings as `*bold*` lines not `#`. Sonnet tone rules added: no thinking-out-loud ("Let me check the data…"), no repetition, one answer per reply.
   - **Bundle is now 253 KB across 66 leaves** (up from 224 KB / 65). Typecheck clean, 34/34 tests green throughout. All of today's progress captured via Sandeep-driven `debug` messages on Slack — the loop worked: fix → reload → retry → confirm.
 - **2026-04-22** — Cost redesign: the hot path no longer allocates a worktree or lets Sonnet roam the Nelson source. Knowledge is now consolidated in `nelson-assistant/knowledge/` (65 leaves, ~224 KB, shipped in the Docker image). At boot, `src/knowledge/loader.ts` loads every yaml into memory; per question a cheap Haiku "leaf picker" (`src/knowledge/picker.ts`) returns 1–3 relevant leaf paths, which `src/knowledge/inject.ts` renders into a PRIMARY-grounded-source block appended to Sonnet's system prompt. Source-read tools (`Read`, `Grep`, `Glob`, `Bash(git *)`) were removed from the runner allowlist; the only way back into the source tree is the new `mcp__nelson__deep_research` tool (`src/agent/tools/deep_research.ts`) which acquires a worktree, performs ≤5 reads / ≤3 greps, and releases — used as an EXPENSIVE fallback, not the default. `src/config/env.ts` gained per-role model ids (`BEDROCK_CLASSIFIER_MODEL_ID`, `BEDROCK_LEAF_PICKER_MODEL_ID`, `BEDROCK_CONFIDENCE_MODEL_ID`) so helper roles can swap to cheaper models independently. New `.claude/skills/train/` codifies release-branch-only reads (`origin/main` for omena-service-app, `origin/master` for everyone else; reads via `git show` / `git ls-tree`, no checkout). Goal: Sonnet bill down from ~$15/day on 15 queries to ≤$10/day / ~$300–400/month for 20 queries/day. Typecheck clean, 34/34 tests green. Dev server loads the 65-leaf bundle at startup.
+- **2026-04-23** — First real production cut-over + Phase F landing:
+  - **Phase F.1 topic analysis** shipped — `src/analytics/topics.ts` embeds chatlog questions with Titan v2 (`BEDROCK_EMBEDDING_MODEL_ID=amazon.titan-embed-text-v2:0`), agglomerative cosine clustering (threshold 0.78, minClusterSize 2), persists to `analytics/topics/<date>.json` with an embedding dedupe cache at `analytics/embeddings/<hash>.json`. CLI `scripts/run-topic-analysis.js` flags `--since`, `--save`, `--notify`. Nightly cron on this GCP VM fires `claude -p "/topic-analysis --save --notify"` at 03:00 UTC; DMs admin the summary. 13 new tests.
+  - **Phase F.2 cluster hints** — `src/state/topic-hints.ts` loads the latest topic report at boot, per-turn substring-matches the user's question against cluster sample/representative questions, injects the top-2 clusters by frequency between thread-state and leaves. SIGHUP reloads so the nightly cron's output lands live. 9 new tests.
+  - **Docker image shipping the knowledge bundle** — caught a latent bug: the Dockerfile never did `COPY knowledge/`, so any deploy after the knowledge-graph landed would have crash-looped. Shipped as `Dockerfile` edit + ECR push + ECS force-new-deployment. First real prod serving session: decisions + topic report + embeddings cache migrated from local fs to the shared S3 bucket so prod boots with memory.
+  - **Slack app flipped from Socket → HTTP** — cert-backed ALB endpoint `assistant.nelson.management/slack/events`. Dev server kept running socket-mode for a while until Sandeep noticed slash commands were still routing to the VM; killed the dev bot.
+  - **VPC peering hub ↔ shared-rds** — CDK peering stack deployed (`pcx-06e836ccd366bbc6d`). Hub-side routes done by CDK; RDS-side (reverse routes, SG 5432 from `10.90.0.0/20`, peering DNS resolution on both sides) done via AWS CLI since the RDS VPC is same-account. Tried + rejected prod2 / website VPC peering (CIDR collision on `10.0.0.0/16`; IAM covers the read-only AWS-API surface the bot actually needs).
+- **2026-04-24** — Big iteration day on Slack integration + attachments:
+  - **Thread follow-ups in channels** — `src/slack/events.ts` `app.message` channel branch; `conversations.replies` check (async fire-and-forget so it doesn't block Slack's 3s ack SLA) determines whether the bot has previously posted in the thread; if so, fires as `source: thread-follow-up`. New manifest scopes (`channels:history` + `groups:history`) and events (`message.channels` + `message.groups`). Verified by user with real channel testing.
+  - **`download_report` + `read_attachment` MCP tools** — downloads Nelson file endpoints (XLSX/CSV/PDF/JSON) into task tmpfs, parses inline preview; reads Slack attachments via the new `src/slack/attachments.ts` helper (Bearer auth, 10 MB × 3 files caps), images return as image blocks Sonnet sees directly, XLSX/XLS sheets parsed into JSON rows (first 50 per sheet), text files inlined up to 40 KB.
+  - **Deploy-saga debugging** — caught these in prod, fixed forward:
+    - `xlsx` was in devDependencies, not prodDependencies → Docker runtime stage crashed with MODULE_NOT_FOUND (~7 min prod downtime). Moved to deps.
+    - ExpressReceiver `processBeforeResponse: true` was blowing past Slack's 3s ack SLA on slow handlers → events retried / handlers ran silently. Flipped to `false`.
+    - Slack manifest missing `event_subscriptions.request_url`, `interactivity.request_url`, per-slash-command URLs. Added all three; socket_mode_enabled default flipped to `false` (was `true`, re-enabling socket on every manifest paste).
+    - `undici.request` was not following Slack's 302 from `url_private_download` to the CDN; auto-follow stripped Bearer on cross-origin → CDN returned a 62 KB HTML "please sign in" page that the XLSX parser choked on. Added a manual two-step redirect (Bearer on step 1, no-auth on step 2 to the pre-signed URL).
+    - Bot token was missing the `files:read` scope → Slack returns the same HTML page regardless of the redirect fix. Added to the manifest.
+  - **Classifier attachment-aware** — `src/agent/pipeline.ts` now appends attachment metadata (name + mimetype) to the classifier input and coerces `needs_clarification` / `conversational` verdicts to `data_query` when attachments are present, so Sonnet + `read_attachment` actually run instead of the bot asking "which report?".
+  - **Manifest full-featured for one-time IT approval** — `slack/app-manifest.yml` now carries the full roadmap-driven scope set (22 bot scopes, 9 bot events) with per-scope rationale comments. Added: `files:write`, `channels:read`, `groups:read`, `mpim:history` / `mpim:read` / `mpim:write`, `team:read`, `usergroups:read`, `users:read.email`; events `app_uninstalled`, `message.mpim`, `tokens_revoked`. Pending: Sandeep to paste + reinstall once IT approves.
+  - **Prod image trail today**: `efa4131` → `83198ec` → `4d52054` → `cdf53ce` → `a87c7d2` → `ae75aed` → `7a3c62c` → `a0032d0` → `8ae6a61` (final). Plus the manifest-only commits `02a5919`, `4027e40`, `3c04537`, `06da703`, `b18c551`, `2f79eac`. **Prod is currently on `8ae6a61` / manifest content `2f79eac`; Sandeep letting it soak.**
