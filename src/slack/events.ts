@@ -65,34 +65,39 @@ export function registerEvents(
       // @mention in a channel fires both app_mention and message.channels —
       // let app_mention handle those and bail here to avoid double enqueue.
       if (selfUserId && text.includes(`<@${selfUserId}>`)) return;
-      let botEngaged = false;
-      try {
-        const res = await client.conversations.replies({
-          channel: message.channel,
-          ts: message.thread_ts,
-          limit: 200,
-        });
-        botEngaged = (res.messages ?? []).some((m) => m.user === selfUserId);
-      } catch (err) {
-        logger.debug({ err, threadTs: message.thread_ts }, 'thread engagement check failed');
-        return;
-      }
-      if (!botEngaged) return;
-      if (message.subtype === 'file_share') return;
-      enqueue({
-        kind: 'ask',
-        source: 'thread-follow-up',
-        channel: message.channel,
-        userId: message.user ?? 'unknown',
-        text,
-        threadTs: message.thread_ts,
-        userMessageTs: message.ts,
-      });
-      try {
-        await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'hourglass_flowing_sand' });
-      } catch (err) {
-        logger.debug({ err }, 'failed to add reaction');
-      }
+      // Fire-and-forget the engagement check + enqueue. ExpressReceiver is
+      // configured with processBeforeResponse=true, so Slack's 3-second ack
+      // SLA starts when the handler returns its promise — we can't keep
+      // conversations.replies on that path without risking retries.
+      const threadTs = message.thread_ts;
+      void (async () => {
+        try {
+          const res = await client.conversations.replies({
+            channel: message.channel,
+            ts: threadTs,
+            limit: 200,
+          });
+          const botEngaged = (res.messages ?? []).some((m) => m.user === selfUserId);
+          if (!botEngaged) return;
+          if (message.subtype === 'file_share') return;
+          enqueue({
+            kind: 'ask',
+            source: 'thread-follow-up',
+            channel: message.channel,
+            userId: message.user ?? 'unknown',
+            text,
+            threadTs,
+            userMessageTs: message.ts,
+          });
+          try {
+            await client.reactions.add({ channel: message.channel, timestamp: message.ts, name: 'hourglass_flowing_sand' });
+          } catch (err) {
+            logger.debug({ err }, 'failed to add reaction');
+          }
+        } catch (err) {
+          logger.debug({ err, threadTs }, 'thread engagement check failed');
+        }
+      })();
       return;
     }
     if (message.channel_type !== 'im') return;
