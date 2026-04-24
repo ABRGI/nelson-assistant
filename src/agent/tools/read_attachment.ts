@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
+import * as XLSX from 'xlsx';
 import type { LocalAttachment } from '../../slack/attachments.js';
 import { logger } from '../../observability/logger.js';
 
@@ -30,6 +31,11 @@ type McpContent =
 
 const IMAGE_MIME = new Set<string>(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const TEXT_MIME = new Set<string>(['text/plain', 'text/csv', 'text/markdown', 'application/json']);
+const XLSX_MIME = new Set<string>([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx
+  'application/vnd.ms-excel', // .xls
+]);
+const MAX_XLSX_ROWS_PER_SHEET = 50;
 
 export async function readAttachment(
   ctx: ReadAttachmentContext,
@@ -63,6 +69,37 @@ export async function readAttachment(
     } catch (err) {
       logger.warn({ err, fileId: att.fileId }, 'read_attachment: failed to read image');
       return { content: [{ type: 'text', text: `read_attachment: failed to read image ${att.name}: ${(err as Error).message}` }] };
+    }
+  }
+
+  if (XLSX_MIME.has(att.mimetype)) {
+    try {
+      const buf = await readFile(att.filePath);
+      const wb = XLSX.read(buf, { type: 'buffer' });
+      const summary = wb.SheetNames.map((name) => {
+        const sheet = wb.Sheets[name];
+        if (!sheet) return `Sheet "${name}": empty`;
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, { defval: null });
+        const cols = rows.length > 0 ? Object.keys(rows[0]!) : [];
+        const preview = rows.slice(0, MAX_XLSX_ROWS_PER_SHEET);
+        return [
+          `Sheet "${name}" — ${rows.length} row(s), columns: [${cols.join(', ')}]`,
+          rows.length > MAX_XLSX_ROWS_PER_SHEET
+            ? `First ${MAX_XLSX_ROWS_PER_SHEET} rows (of ${rows.length}):`
+            : `Rows:`,
+          JSON.stringify(preview, null, 2),
+        ].join('\n');
+      }).join('\n\n');
+      logger.info({ fileId: att.fileId, sheets: wb.SheetNames.length }, 'read_attachment: xlsx');
+      return {
+        content: [{
+          type: 'text',
+          text: `File: ${att.name} (${att.mimetype}, ${att.sizeBytes} bytes)\n---\n${summary}`,
+        }],
+      };
+    } catch (err) {
+      logger.warn({ err, fileId: att.fileId }, 'read_attachment: failed to parse xlsx');
+      return { content: [{ type: 'text', text: `read_attachment: failed to parse ${att.name}: ${(err as Error).message}` }] };
     }
   }
 

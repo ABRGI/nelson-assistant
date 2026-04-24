@@ -11,6 +11,7 @@ import {
   type LocalAttachment,
 } from '../src/slack/attachments.js';
 import { readAttachment } from '../src/agent/tools/read_attachment.js';
+import * as XLSX from 'xlsx';
 
 describe('extractSlackFilesFromMessage', () => {
   it('returns [] when files is missing or wrong shape', () => {
@@ -125,6 +126,30 @@ describe('readAttachment tool', () => {
     expect(out.content[0]!.type).toBe('text');
     if (out.content[0]!.type === 'text') {
       expect(out.content[0]!.text).toContain('# hello');
+    }
+  });
+
+  it('parses XLSX into per-sheet JSON with row cap', async () => {
+    const rows = Array.from({ length: 60 }, (_, i) => ({ n: i + 1, label: `row-${i + 1}` }));
+    const ws = XLSX.utils.json_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Data');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+    const att = await makeAtt(
+      'F-xlsx',
+      'report.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      buf,
+    );
+    const map = new Map([[att.fileId, att]]);
+    const out = await readAttachment({ attachments: map }, { file_id: 'F-xlsx' });
+    expect(out.content[0]!.type).toBe('text');
+    if (out.content[0]!.type === 'text') {
+      const text = out.content[0]!.text;
+      expect(text).toContain('Sheet "Data" — 60 row(s)');
+      expect(text).toContain('First 50 rows (of 60)');
+      expect(text).toContain('"label": "row-1"');
+      expect(text).not.toContain('row-60'); // past the cap
     }
   });
 

@@ -188,7 +188,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
           ...(args.attachments && args.attachments.length > 0 ? [
             tool(
               'read_attachment',
-              'Read a file the user uploaded to Slack alongside their message. Images (png/jpeg/webp/gif) are returned as an image block you can see directly. Small text files (txt/csv/md/json) are inlined up to ~40KB. Other mimetypes return metadata only — ask the user to paste relevant content. Reference attachments by the file_id listed in the "User-attached files" preamble of the question; arbitrary paths are rejected. ALWAYS call this tool BEFORE answering when the user attached something relevant to their question.',
+              'Read a file the user uploaded to Slack alongside their message. Images (png/jpeg/webp/gif) are returned as an image block you can see directly. Small text files (txt/csv/md/json) are inlined up to ~40KB. XLSX / XLS spreadsheets are parsed per-sheet and returned as JSON rows (first 50 rows/sheet). Other mimetypes return metadata only — ask the user to paste relevant content. Reference attachments by the file_id listed in the "User-attached files" preamble of the question; arbitrary paths are rejected. ALWAYS call this tool BEFORE answering when the user attached something relevant to their question.',
               ReadAttachmentInputSchema.shape,
               async (input) => {
                 const attachmentMap = new Map((args.attachments ?? []).map((a) => [a.fileId, a]));
