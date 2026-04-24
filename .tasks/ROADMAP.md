@@ -24,18 +24,26 @@ Sandeep is letting the bot run as-is for a while to gather real-use signal.
 
 ### Medium, real new value
 
-4. **Audit log under S3 Object Lock** — chatlog has events but isn't tamper-evident. Compliance-grade log splits off under Object Lock. Small CDK + writer. Prerequisite for "delete user data" style compliance stories.
-5. **Slack notifications when training jobs complete** (nice-to-have refresh) — we already have `_slack-notify.js#notifyAdmin` for topic-analysis. Extend to `/train` and bundle-gap.
+4. **Ambient channel listening** (design agreed — implement when soak period ends). Current behavior: bot only replies on @mention or thread follow-up. Target: in channels the bot is `/invite`d into, listen to every top-level message and let the classifier decide whether it was directed at the bot.
+   - **Opt-in via Slack invite** — channel membership is the gate. Bot gets `message.channels`/`message.groups` events only for channels it's in; no separate allowlist code needed.
+   - **Classifier gains `for_me` / `not_for_me` verdict** with a confidence score. Default threshold: respond only if `for_me ≥ 0.80`.
+   - **Consecutive-message coalescer**: buffer per `(channel, user)`; wait 20s after a candidate; if the same user posts another top-level message in the channel in the window, concat and restart the timer. Fixes the "user posts a follow-up as a new message instead of threading" case.
+   - **Reply in-thread** on the triggering message (keeps the channel clean).
+   - **History access for context**: when the classifier fires on a non-mention candidate, pull the last N `conversations.history` messages in the channel so the classifier can disambiguate references (same mechanism we use in threads today).
+   - Heuristic pre-filter to skip empty / bot / subtype-other / very-short messages before the classifier runs, so we don't burn Haiku tokens on `:+1:` noise.
+   - Size: ~1 day (channel allowlist code is free now; the work is the classifier verdict + coalescer + pipeline wiring + tests).
+5. **Audit log under S3 Object Lock** — chatlog has events but isn't tamper-evident. Compliance-grade log splits off under Object Lock. Small CDK + writer. Prerequisite for "delete user data" style compliance stories.
+6. **Slack notifications when training jobs complete** (nice-to-have refresh) — we already have `_slack-notify.js#notifyAdmin` for topic-analysis. Extend to `/train` and bundle-gap.
 
 ### Big, strategic
 
-6. **Multi-tenant per-query routing from JWT claims** — biggest Stage-1-is-hacky item. Currently every query goes to Omena Prod (`DEFAULT_TENANT_ID`). Real fix reads `environmentids` claim + routes via the `nelson-tenants` DynamoDB table. Requires: code changes in `src/auth/clients.ts` + `src/agent/pipeline.ts`, task-role IAM addition for `dynamodb:GetItem/Query/Scan` on `nelson-tenants`. Unlocks real multi-tenant.
-7. **Native Nelson SSO** — replace the bot-hosted custom sign-in page. Needs coordination with `nelson-user-management-service` owner to add an OAuth-style authorize+callback flow. Until then, the custom page is the MVP fallback.
+7. **Multi-tenant per-query routing from JWT claims** — biggest Stage-1-is-hacky item. Currently every query goes to Omena Prod (`DEFAULT_TENANT_ID`). Real fix reads `environmentids` claim + routes via the `nelson-tenants` DynamoDB table. Requires: code changes in `src/auth/clients.ts` + `src/agent/pipeline.ts`, task-role IAM addition for `dynamodb:GetItem/Query/Scan` on `nelson-tenants`. Unlocks real multi-tenant.
+8. **Native Nelson SSO** — replace the bot-hosted custom sign-in page. Needs coordination with `nelson-user-management-service` owner to add an OAuth-style authorize+callback flow. Until then, the custom page is the MVP fallback.
 
 ### Late / deferred (deliberately — don't pre-empt)
 
-8. **Lift training + analytics crons off the GCP dev VM onto deployed infra** (EventBridge → `ecs:RunTask`). User explicitly wants training local while the loop stabilises.
-9. **`mcp__nelson__playwright.visual_compare`** — deferred, no concrete need yet. Revisit if a real use case emerges.
+9. **Lift training + analytics crons off the GCP dev VM onto deployed infra** (EventBridge → `ecs:RunTask`). User explicitly wants training local while the loop stabilises.
+10. **`mcp__nelson__playwright.visual_compare`** — deferred, no concrete need yet. Revisit if a real use case emerges.
 
 ### Open loose ends worth a look
 
