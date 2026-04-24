@@ -54,6 +54,7 @@ oauth_config:
       - chat:write
       - chat:write.public
       - commands
+      - files:read
       - groups:history
       - im:history
       - im:read
