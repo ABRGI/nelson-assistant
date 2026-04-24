@@ -25,17 +25,24 @@ features:
     display_name: Nelson
     always_online: true
   slash_commands:
+    # url: per-command slash-command endpoint. Slack POSTs here when the
+    # user types the command in any channel/DM. Must match the Express
+    # route in src/index.ts (/slack/commands).
     - command: /nelson
+      url: https://assistant.nelson.management/slack/commands
       description: Ask Nelson anything. First use will DM you a sign-in link.
       usage_hint: "[your question]"
       should_escape: false
     - command: /nelson-auth
+      url: https://assistant.nelson.management/slack/commands
       description: Force a new Nelson sign-in link (DM only)
       should_escape: false
     - command: /nelson-help
+      url: https://assistant.nelson.management/slack/commands
       description: Show Nelson help
       should_escape: false
     - command: /nelson-feedback
+      url: https://assistant.nelson.management/slack/commands
       description: Flag a bot reply as wrong or unhelpful (logged for a human review)
       usage_hint: "[what went wrong]"
       should_escape: false
