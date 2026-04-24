@@ -67,5 +67,8 @@ settings:
   interactivity:
     is_enabled: true
   org_deploy_enabled: false
-  socket_mode_enabled: true
+  # Default is OFF (prod uses HTTP delivery to the ALB). Flip to true ONLY
+  # when you want to run `npm run dev` on your laptop/VM and drive the bot
+  # over a socket — remember to flip it back before re-pasting to Slack.
+  socket_mode_enabled: false
   token_rotation_enabled: false
