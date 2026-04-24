@@ -308,7 +308,14 @@ function buildSlackApp(config: AppConfig): {
       commands: '/slack/commands',
       interactive: '/slack/interactive',
     },
-    processBeforeResponse: true,
+    // processBeforeResponse=false lets Bolt send 200-OK the instant Slack
+    // delivers the event, rather than waiting for the handler promise to
+    // resolve. Our handlers do several slow Slack API calls
+    // (conversations.replies, reactions.add) plus enqueue to the agent —
+    // with true, routine work blew past Slack's 3s ack SLA and triggered
+    // retries + duplicate processing. Slash commands keep using respond()
+    // via response_url, which is independent of this flag.
+    processBeforeResponse: false,
   });
   const app = new App({
     token: config.runtime.slackBotToken,
