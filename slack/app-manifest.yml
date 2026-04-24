@@ -47,31 +47,45 @@ features:
       usage_hint: "[what went wrong]"
       should_escape: false
 oauth_config:
+  # Scope set is intentionally full-featured so IT only approves once.
+  # Each scope maps to an existing or roadmap feature — see comments.
   scopes:
     bot:
-      - app_mentions:read
-      - channels:history
-      - chat:write
-      - chat:write.public
-      - commands
-      - files:read
-      - groups:history
-      - im:history
-      - im:read
-      - im:write
-      - reactions:read
-      - reactions:write
-      - users:read
+      - app_mentions:read      # receive @Nelson in channels
+      - channels:history       # read public-channel messages in threads the bot is in (follow-up)
+      - channels:read          # look up channel metadata for logging + admin tools
+      - chat:write             # post as Nelson in DMs/threads
+      - chat:write.public      # post in public channels the bot isn't a member of (rare, auth flow fallback)
+      - commands               # /nelson, /nelson-auth, /nelson-help, /nelson-feedback
+      - files:read             # download user-uploaded screenshots / XLSX / CSV for read_attachment tool
+      - files:write            # future: bot uploads generated files (PDF export, rendered report) back to the user
+      - groups:history         # private channel messages for thread follow-up
+      - groups:read            # private channel metadata for logging + admin tools
+      - im:history             # DMs — primary Q&A surface
+      - im:read                # find DMs to open with a user (sign-in flow DMs)
+      - im:write               # open a DM to post the sign-in link
+      - mpim:history           # group DMs (3+ people): future team-level threads with the bot
+      - mpim:read              # list group DMs
+      - mpim:write             # post in group DMs
+      - reactions:read         # :+1:/:-1: on bot replies = feedback signal for /learning
+      - reactions:write        # :hourglass: / :white_check_mark: swap on in-flight + completed turns
+      - team:read              # workspace name/id for logging, analytics attribution
+      - usergroups:read        # resolve @oncall / @escalation groups for routing planned work
+      - users:read             # name + id of the asker for context
+      - users:read.email       # resolve Slack user → email for Nelson account-linking debug
 settings:
   event_subscriptions:
     request_url: https://assistant.nelson.management/slack/events
     bot_events:
-      - app_mention
-      - message.channels
-      - message.groups
-      - message.im
-      - reaction_added
-      - reaction_removed
+      - app_mention            # @Nelson in a channel
+      - app_uninstalled        # bot removed from workspace — trigger state cleanup
+      - message.channels       # public channel messages (for thread follow-up)
+      - message.groups         # private channel messages (for thread follow-up)
+      - message.im             # DMs
+      - message.mpim           # group DMs
+      - reaction_added         # feedback thumbs
+      - reaction_removed       # feedback thumbs undo
+      - tokens_revoked         # auth broke — alert + page
   interactivity:
     is_enabled: true
     request_url: https://assistant.nelson.management/slack/interactive
